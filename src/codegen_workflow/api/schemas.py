@@ -167,6 +167,27 @@ class RunTraceResponse(BaseModel):
     events: list[TraceEvent]
 
 
+class CandidateFileTreeResponse(BaseModel):
+    """Relative paths of files under the workflow candidate workspace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_id: str
+    files: list[str]
+
+
+class CandidateFileContentResponse(BaseModel):
+    """UTF-8 contents of one file under the candidate workspace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_id: str
+    path: str
+    content: str
+    encoding: Literal["utf-8"] = "utf-8"
+    size_bytes: int
+
+
 class HealthResponse(BaseModel):
     """Liveness probe response."""
 
