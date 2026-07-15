@@ -8,14 +8,23 @@ makes these interrupts durable and resumable with the same ``thread_id``.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, cast
 
 from langgraph.types import interrupt
+from pydantic import ValidationError
 
-from codegen_workflow.routing import status_for_terminal_gate
+from codegen_workflow.routing import (
+    STATUS_ABORTED,
+    STATUS_MAX_ITERATIONS,
+    status_for_terminal_gate,
+)
 from codegen_workflow.schemas.decisions import DecisionLiteral, HumanDecision
 from codegen_workflow.state import WorkflowState
 from codegen_workflow.workspace import candidate_dir, snapshot_candidate
+
+_ALLOWED_DECISIONS: frozenset[str] = frozenset(
+    {"approve", "request_changes", "replan", "abort"}
+)
 
 
 def _file_tree(workspace_path: str | None) -> list[str]:
@@ -89,6 +98,7 @@ def _normalize_decision(raw: Any) -> dict[str, Any]:
 
     Raises:
         ValueError: If the payload cannot be parsed as a decision.
+        ValidationError: If schema validation fails for unsupported values.
     """
     if isinstance(raw, HumanDecision):
         return raw.model_dump()
@@ -96,19 +106,46 @@ def _normalize_decision(raw: Any) -> dict[str, Any]:
         return HumanDecision.model_validate(raw).model_dump()
     if isinstance(raw, str):
         decision = raw.strip().lower()
-        allowed: tuple[DecisionLiteral, ...] = (
-            "approve",
-            "request_changes",
-            "replan",
-            "abort",
-        )
-        if decision not in allowed:
+        if decision not in _ALLOWED_DECISIONS:
             raise ValueError(f"Unsupported human decision payload: {raw!r}")
         return HumanDecision(
-            decision=decision,  # type: ignore[arg-type]
+            decision=cast(DecisionLiteral, decision),
             feedback="",
         ).model_dump()
     raise ValueError(f"Unsupported human decision payload: {raw!r}")
+
+
+def _append_terminal_error(
+    state: WorkflowState,
+    *,
+    gate: str,
+    status: str,
+    feedback: str,
+    iteration: int,
+) -> list[dict[str, Any]]:
+    """Append a typed terminal error when aborting or hitting the limit.
+
+    Args:
+        state: Current workflow state.
+        gate: Gate name that produced the terminal decision.
+        status: Terminal status string.
+        feedback: Human feedback text.
+        iteration: Current coder iteration.
+
+    Returns:
+        Updated errors list.
+    """
+    errors = list(state.get("errors") or [])
+    if status in {STATUS_ABORTED, STATUS_MAX_ITERATIONS}:
+        errors.append(
+            {
+                "type": status,
+                "gate": gate,
+                "iteration": iteration,
+                "message": feedback or status,
+            }
+        )
+    return errors
 
 
 def coder_human_gate(state: WorkflowState) -> dict[str, Any]:
@@ -144,7 +181,10 @@ def coder_human_gate(state: WorkflowState) -> dict[str, Any]:
         ),
     }
     resume_value = interrupt(payload)
-    decision = _normalize_decision(resume_value)
+    try:
+        decision = _normalize_decision(resume_value)
+    except ValidationError as exc:
+        raise ValueError(f"Unsupported human decision payload: {resume_value!r}") from exc
 
     history = list(state.get("feedback_history") or [])
     history.append(
@@ -166,7 +206,15 @@ def coder_human_gate(state: WorkflowState) -> dict[str, Any]:
         planner_feedback.append(feedback)
         update["planner_feedback"] = planner_feedback
 
-    update["status"] = status_for_terminal_gate("coder", {**state, **update})
+    status = status_for_terminal_gate("coder", {**state, **update})
+    update["status"] = status
+    update["errors"] = _append_terminal_error(
+        state,
+        gate="coder",
+        status=status,
+        feedback=feedback,
+        iteration=iteration,
+    )
     return update
 
 
@@ -202,7 +250,10 @@ def reviewer_human_gate(state: WorkflowState) -> dict[str, Any]:
         "iteration": iteration,
     }
     resume_value = interrupt(payload)
-    decision = _normalize_decision(resume_value)
+    try:
+        decision = _normalize_decision(resume_value)
+    except ValidationError as exc:
+        raise ValueError(f"Unsupported human decision payload: {resume_value!r}") from exc
 
     history = list(state.get("feedback_history") or [])
     history.append(
@@ -224,5 +275,13 @@ def reviewer_human_gate(state: WorkflowState) -> dict[str, Any]:
         planner_feedback.append(feedback)
         update["planner_feedback"] = planner_feedback
 
-    update["status"] = status_for_terminal_gate("reviewer", {**state, **update})
+    status = status_for_terminal_gate("reviewer", {**state, **update})
+    update["status"] = status
+    update["errors"] = _append_terminal_error(
+        state,
+        gate="reviewer",
+        status=status,
+        feedback=feedback,
+        iteration=iteration,
+    )
     return update
