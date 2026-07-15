@@ -62,7 +62,11 @@ class APISettings:
             Populated :class:`APISettings` instance.
         """
         return cls(
-            openai_api_key=os.environ.get("OPENAI_API_KEY") or None,
+            openai_api_key=(
+                os.environ.get("AZURE_OPENAI_API_KEY")
+                or os.environ.get("OPENAI_API_KEY")
+                or None
+            ),
             planner_model=os.environ.get("PLANNER_MODEL", "gpt-4.1-mini"),
             coder_model=os.environ.get("CODER_MODEL", "gpt-4.1-mini"),
             reviewer_model=os.environ.get("REVIEWER_MODEL", "gpt-4.1-mini"),
