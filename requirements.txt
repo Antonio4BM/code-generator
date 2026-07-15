@@ -1,0 +1,6 @@
+langgraph
+langgraph-checkpoint
+langchain
+langchain-openai
+langchain-core
+pytest

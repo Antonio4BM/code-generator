@@ -2,19 +2,27 @@
 
 The graph stores structured artifacts explicitly. A message list is not
 used as the primary state representation.
+
+State invariants:
+
+- ``workflow_id`` and ``workspace_path`` are immutable after initialization.
+- ``iteration`` increments only when the coder completes an attempt.
+- ``feedback_history`` is append-only.
+- Agent nodes return partial state updates only.
 """
 
 from __future__ import annotations
 
-from typing import Any, NotRequired, TypedDict
+from typing import Any, TypedDict
 
 
-class WorkflowState(TypedDict):
+class WorkflowState(TypedDict, total=False):
     """Typed LangGraph state for one user software request.
 
     Attributes:
         user_request: Plain-text software requirement from the caller.
-        workflow_id: UUID identifying this workflow run.
+        workflow_id: UUID identifying this workflow run (aligned with
+            the LangGraph ``thread_id`` when practical).
         workspace_path: Absolute path to the isolated workspace root.
         plan: Validated project plan produced by the planner.
         planner_feedback: Feedback strings used when replanning.
@@ -36,22 +44,22 @@ class WorkflowState(TypedDict):
     """
 
     user_request: str
-    workflow_id: NotRequired[str]
-    workspace_path: NotRequired[str]
-    plan: NotRequired[dict[str, Any]]
-    planner_feedback: NotRequired[list[str]]
-    generated_files: NotRequired[list[str]]
-    file_hashes: NotRequired[dict[str, str]]
-    coder_result: NotRequired[dict[str, Any]]
-    verification_report: NotRequired[dict[str, Any]]
-    review_report: NotRequired[dict[str, Any]]
-    feedback_history: NotRequired[list[dict[str, Any]]]
-    coder_human_decision: NotRequired[dict[str, Any]]
-    reviewer_human_decision: NotRequired[dict[str, Any]]
-    iteration: NotRequired[int]
-    max_iterations: NotRequired[int]
-    status: NotRequired[str]
-    artifact_path: NotRequired[str | None]
-    artifact_hash: NotRequired[str | None]
-    errors: NotRequired[list[dict[str, Any]]]
-    planner_errors: NotRequired[list[dict[str, Any]]]
+    workflow_id: str
+    workspace_path: str
+    plan: dict[str, Any]
+    planner_feedback: list[str]
+    generated_files: list[str]
+    file_hashes: dict[str, str]
+    coder_result: dict[str, Any]
+    verification_report: dict[str, Any]
+    review_report: dict[str, Any]
+    feedback_history: list[dict[str, Any]]
+    coder_human_decision: dict[str, Any]
+    reviewer_human_decision: dict[str, Any]
+    iteration: int
+    max_iterations: int
+    status: str
+    artifact_path: str | None
+    artifact_hash: str | None
+    errors: list[dict[str, Any]]
+    planner_errors: list[dict[str, Any]]
