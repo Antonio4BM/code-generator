@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Code Generator</title>
+    <style>
+      :root {
+        --bg: #0f1419;
+        --panel: #1a222c;
+        --text: #e7ecf1;
+        --muted: #8b9aab;
+        --accent: #3d9a78;
+        --border: #2a3542;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(1200px 600px at 10% -10%, #1d3a32 0%, transparent 55%),
+          radial-gradient(900px 500px at 100% 0%, #243048 0%, transparent 50%),
+          var(--bg);
+        color: var(--text);
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 3rem 1.25rem 4rem;
+      }
+      h1 {
+        font-family: "IBM Plex Serif", Georgia, serif;
+        font-weight: 600;
+        font-size: clamp(2rem, 4vw, 2.75rem);
+        margin: 0 0 0.5rem;
+        letter-spacing: -0.02em;
+      }
+      .lede {
+        color: var(--muted);
+        margin: 0 0 2rem;
+        max-width: 36rem;
+        line-height: 1.5;
+      }
+      .composer {
+        display: grid;
+        gap: 0.75rem;
+      }
+      textarea {
+        width: 100%;
+        min-height: 140px;
+        resize: vertical;
+        padding: 1rem;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--panel);
+        color: var(--text);
+        font: inherit;
+        line-height: 1.45;
+      }
+      button {
+        justify-self: start;
+        border: 0;
+        border-radius: 8px;
+        padding: 0.7rem 1.2rem;
+        background: var(--accent);
+        color: #04130e;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:disabled { opacity: 0.55; cursor: wait; }
+      .status {
+        margin-top: 1.5rem;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+      .assistant {
+        margin-top: 1rem;
+        padding: 1.1rem 1.2rem;
+        border-left: 3px solid var(--accent);
+        background: rgba(26, 34, 44, 0.85);
+        white-space: pre-wrap;
+        line-height: 1.5;
+      }
+      details {
+        margin-top: 1.25rem;
+        border-top: 1px solid var(--border);
+        padding-top: 1rem;
+      }
+      summary {
+        cursor: pointer;
+        color: var(--muted);
+      }
+      .review pre {
+        overflow: auto;
+        background: #12181f;
+        padding: 0.85rem;
+        border-radius: 8px;
+        font-size: 0.85rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Code Generator</h1>
+      <p class="lede">
+        Describe the software you want. One ticket becomes one workflow result —
+        not a multi-agent chat transcript.
+      </p>
+      <form class="composer" id="ticket-form">
+        <textarea
+          id="ticket"
+          name="ticket"
+          maxlength="20000"
+          required
+          placeholder="Build a small Python CLI that greets the user by name..."
+        ></textarea>
+        <button type="submit" id="submit">Submit ticket</button>
+      </form>
+      <p class="status" id="status" aria-live="polite"></p>
+      <div class="assistant" id="assistant" hidden></div>
+      <details class="review" id="review" hidden>
+        <summary>Human review controls</summary>
+        <p class="lede">Approve, request changes, replan, or abort the paused workflow.</p>
+        <label>
+          Decision
+          <select id="decision">
+            <option value="approve">approve</option>
+            <option value="request_changes">request_changes</option>
+            <option value="replan">replan</option>
+            <option value="abort">abort</option>
+          </select>
+        </label>
+        <textarea id="feedback" placeholder="Optional feedback (required for changes/replan)"></textarea>
+        <button type="button" id="decide">Submit decision</button>
+        <pre id="interrupt"></pre>
+      </details>
+    </main>
+    <script>
+      const form = document.getElementById("ticket-form");
+      const statusEl = document.getElementById("status");
+      const assistant = document.getElementById("assistant");
+      const review = document.getElementById("review");
+      const interruptEl = document.getElementById("interrupt");
+      let workflowId = null;
+
+      function showResult(data) {
+        workflowId = data.workflow_id;
+        statusEl.textContent = `Status: ${data.status} · ${data.workflow_id}`;
+        assistant.hidden = false;
+        let text = data.message || "";
+        if (data.artifact_url) {
+          text += `\n\nArtifact: ${data.artifact_url}`;
+        }
+        if (data.result) {
+          text += `\n\n${JSON.stringify(data.result, null, 2)}`;
+        }
+        assistant.textContent = text;
+        if (data.interrupt) {
+          review.hidden = false;
+          interruptEl.textContent = JSON.stringify(data.interrupt, null, 2);
+        } else {
+          review.hidden = true;
+        }
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const button = document.getElementById("submit");
+        button.disabled = true;
+        statusEl.textContent = "Starting workflow…";
+        try {
+          const res = await fetch("/run-ticket", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ticket: document.getElementById("ticket").value }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            statusEl.textContent = data.message || "Request failed";
+            assistant.hidden = false;
+            assistant.textContent = JSON.stringify(data, null, 2);
+            return;
+          }
+          showResult(data);
+        } catch (err) {
+          statusEl.textContent = "Network error";
+        } finally {
+          button.disabled = false;
+        }
+      });
+
+      document.getElementById("decide").addEventListener("click", async () => {
+        if (!workflowId) return;
+        const res = await fetch(`/runs/${workflowId}/decision`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            decision: document.getElementById("decision").value,
+            feedback: document.getElementById("feedback").value,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          statusEl.textContent = data.message || "Decision failed";
+          return;
+        }
+        showResult(data);
+      });
+    </script>
+  </body>
+</html>
