@@ -182,7 +182,6 @@
         </label>
         <textarea id="feedback" placeholder="Optional feedback (required for changes/replan)"></textarea>
         <button type="button" id="decide">Submit decision</button>
-        <pre id="interrupt"></pre>
       </details>
     </main>
     <script>
@@ -190,7 +189,6 @@
       const statusEl = document.getElementById("status");
       const assistant = document.getElementById("assistant");
       const review = document.getElementById("review");
-      const interruptEl = document.getElementById("interrupt");
       const fileListEl = document.getElementById("file-list");
       const fileContentEl = document.getElementById("file-content");
       const fileMetaEl = document.getElementById("file-meta");
@@ -247,19 +245,15 @@
 
       function showResult(data) {
         workflowId = data.workflow_id;
-        statusEl.textContent = `Status: ${data.status} · ${data.workflow_id}`;
+        statusEl.textContent = `Status: ${data.status}`;
         assistant.hidden = false;
         let text = data.message || "";
         if (data.artifact_url) {
-          text += `\n\nArtifact: ${data.artifact_url}`;
-        }
-        if (data.result) {
-          text += `\n\n${JSON.stringify(data.result, null, 2)}`;
+          text += `\n\nDownload: ${data.artifact_url}`;
         }
         assistant.textContent = text;
         if (data.interrupt) {
           review.hidden = false;
-          interruptEl.textContent = JSON.stringify(data.interrupt, null, 2);
           loadFileTree(data.workflow_id);
         } else {
           review.hidden = true;
@@ -282,7 +276,7 @@
           if (!res.ok) {
             statusEl.textContent = data.message || "Request failed";
             assistant.hidden = false;
-            assistant.textContent = JSON.stringify(data, null, 2);
+            assistant.textContent = data.message || "Request failed";
             return;
           }
           showResult(data);

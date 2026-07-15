@@ -56,12 +56,19 @@ def create_azure_chat_model(
         or None
     )
     endpoint = _resolve_azure_endpoint()
+    api_version = (
+        os.environ.get("OPENAI_API_VERSION")
+        or os.environ.get("AZURE_OPENAI_API_VERSION")
+        or None
+    )
 
     missing: list[str] = []
     if not api_key:
         missing.append("AZURE_OPENAI_API_KEY (or OPENAI_API_KEY)")
     if not endpoint:
         missing.append("AZURE_OPENAI_ENDPOINT (or OPENAI_BASE_URL)")
+    if not api_version:
+        missing.append("OPENAI_API_VERSION (or AZURE_OPENAI_API_VERSION)")
     if missing:
         raise ValueError(
             "Missing Azure OpenAI configuration: " + ", ".join(missing)
@@ -71,6 +78,7 @@ def create_azure_chat_model(
         "azure_deployment": model_name,
         "azure_endpoint": endpoint,
         "api_key": api_key,
+        "api_version": api_version,
         "temperature": temperature,
     }
     return AzureChatOpenAI(**kwargs)
