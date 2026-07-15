@@ -142,6 +142,38 @@ class ArtifactNotReadyError(APIErrorDetail):
         )
 
 
+class CandidateFileNotFoundError(APIErrorDetail):
+    """Raised when a requested candidate file does not exist."""
+
+    def __init__(self, workflow_id: str, path: str) -> None:
+        super().__init__(
+            status_code=404,
+            code="candidate_file_not_found",
+            message="The requested candidate file does not exist.",
+            workflow_id=workflow_id,
+            details=[path],
+        )
+
+
+class CandidateFileUnreadableError(APIErrorDetail):
+    """Raised when a candidate file cannot be returned as UTF-8 text."""
+
+    def __init__(
+        self,
+        workflow_id: str,
+        message: str,
+        *,
+        details: list[str] | None = None,
+    ) -> None:
+        super().__init__(
+            status_code=400,
+            code="candidate_file_unreadable",
+            message=message,
+            workflow_id=workflow_id,
+            details=details,
+        )
+
+
 class ServiceUnavailableError(APIErrorDetail):
     """Raised when required infrastructure is unavailable."""
 
