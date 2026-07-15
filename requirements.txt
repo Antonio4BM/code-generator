@@ -3,4 +3,9 @@ langgraph-checkpoint
 langchain
 langchain-openai
 langchain-core
+fastapi
+uvicorn
+pydantic
+python-multipart
 pytest
+httpx
