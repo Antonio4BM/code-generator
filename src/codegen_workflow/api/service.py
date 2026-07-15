@@ -15,6 +15,8 @@ from codegen_workflow.api.config import APISettings
 from codegen_workflow.api.errors import (
     ArtifactNotFoundError,
     ArtifactNotReadyError,
+    CandidateFileNotFoundError,
+    CandidateFileUnreadableError,
     GraphInvocationError,
     InvalidHumanDecisionError,
     InvalidWorkflowTransitionError,
@@ -24,6 +26,8 @@ from codegen_workflow.api.errors import (
 from codegen_workflow.api.schemas import (
     PAUSED_STATUSES,
     TERMINAL_STATUSES,
+    CandidateFileContentResponse,
+    CandidateFileTreeResponse,
     HumanDecisionRequest,
     RunStatus,
     RunStatusResponse,
@@ -33,9 +37,17 @@ from codegen_workflow.api.schemas import (
 )
 from codegen_workflow.graph import run_config_for_thread
 from codegen_workflow.routing import MAX_ITERATIONS
-from codegen_workflow.workspace import create_workflow_id
+from codegen_workflow.tools.workspace import (
+    DEFAULT_MAX_FILE_SIZE,
+    WorkspaceFileTools,
+    WorkspaceSecurityError,
+)
+from codegen_workflow.workspace import candidate_dir, create_workflow_id
 
 logger = logging.getLogger(__name__)
+
+# Cap preview reads to the same per-file limit used by workspace tools.
+_MAX_CANDIDATE_PREVIEW_BYTES = DEFAULT_MAX_FILE_SIZE
 
 _SENSITIVE_DETAIL_KEYS = frozenset(
     {
@@ -706,6 +718,138 @@ class WorkflowService:
             )
 
         return RunTraceResponse(workflow_id=workflow_id, events=events)
+
+    def _candidate_root(self, workflow_id: str) -> Path:
+        """Resolve the candidate directory for a workflow with containment checks.
+
+        Args:
+            workflow_id: Workflow identifier.
+
+        Returns:
+            Absolute path to ``candidate/`` under the workflow workspace.
+
+        Raises:
+            WorkflowNotFoundError: Unknown workflow.
+            InvalidWorkflowTransitionError: Missing workspace or path escape.
+        """
+        snapshot = self._snapshot(workflow_id)
+        values = dict(snapshot.values or {})
+        workspace_path = values.get("workspace_path")
+        if not workspace_path:
+            raise InvalidWorkflowTransitionError(
+                workflow_id,
+                "Workspace has not been initialized for this workflow.",
+                code="workspace_not_ready",
+            )
+        workspace_root = Path(workspace_path).resolve()
+        base = self.settings.workspace_base_dir.resolve()
+        if not self._is_relative_to(workspace_root, base):
+            raise InvalidWorkflowTransitionError(
+                workflow_id,
+                "Workspace path is outside the configured workspace directory.",
+                code="workspace_path_violation",
+            )
+        candidate = candidate_dir(workspace_root)
+        if not self._is_relative_to(candidate.resolve(), workspace_root):
+            raise InvalidWorkflowTransitionError(
+                workflow_id,
+                "Candidate path escaped the workflow workspace.",
+                code="workspace_path_violation",
+            )
+        return candidate.resolve()
+
+    def list_candidate_files(self, workflow_id: str) -> CandidateFileTreeResponse:
+        """List relative file paths under the workflow candidate directory.
+
+        Args:
+            workflow_id: Workflow identifier.
+
+        Returns:
+            Sorted relative POSIX paths for generated candidate files.
+        """
+        root = self._candidate_root(workflow_id)
+        if not root.is_dir():
+            return CandidateFileTreeResponse(workflow_id=workflow_id, files=[])
+        files: list[str] = []
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            try:
+                resolved = path.resolve()
+                if not self._is_relative_to(resolved, root):
+                    continue
+                files.append(resolved.relative_to(root).as_posix())
+            except (OSError, ValueError):
+                continue
+        return CandidateFileTreeResponse(workflow_id=workflow_id, files=files)
+
+    def read_candidate_file(
+        self,
+        workflow_id: str,
+        relative_path: str,
+    ) -> CandidateFileContentResponse:
+        """Read one UTF-8 candidate file for human review.
+
+        Args:
+            workflow_id: Workflow identifier.
+            relative_path: Path relative to ``candidate/``.
+
+        Returns:
+            File path, UTF-8 content, and size metadata.
+
+        Raises:
+            CandidateFileNotFoundError: Missing file.
+            CandidateFileUnreadableError: Binary, oversized, or empty path.
+            InvalidWorkflowTransitionError: Path escape / traversal.
+        """
+        root = self._candidate_root(workflow_id)
+        if not root.is_dir():
+            raise CandidateFileNotFoundError(workflow_id, relative_path)
+
+        # Construct tools against an existing root without relying on mkdir
+        # for path resolution; WorkspaceFileTools creates the root when
+        # missing, so only instantiate after the directory check above.
+        tools = WorkspaceFileTools(root, max_file_size=_MAX_CANDIDATE_PREVIEW_BYTES)
+        try:
+            target = tools.resolve_path(relative_path)
+        except WorkspaceSecurityError as exc:
+            raise InvalidWorkflowTransitionError(
+                workflow_id,
+                "Requested path is not allowed inside the candidate workspace.",
+                code="file_path_violation",
+                details=[str(exc)],
+            ) from exc
+
+        if not target.is_file():
+            raise CandidateFileNotFoundError(workflow_id, relative_path)
+
+        size = target.stat().st_size
+        if size > _MAX_CANDIDATE_PREVIEW_BYTES:
+            raise CandidateFileUnreadableError(
+                workflow_id,
+                "File exceeds the maximum preview size.",
+                details=[
+                    f"size_bytes={size}",
+                    f"max_bytes={_MAX_CANDIDATE_PREVIEW_BYTES}",
+                ],
+            )
+
+        try:
+            content = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise CandidateFileUnreadableError(
+                workflow_id,
+                "File is not valid UTF-8 text and cannot be previewed.",
+                details=[relative_path],
+            ) from exc
+
+        return CandidateFileContentResponse(
+            workflow_id=workflow_id,
+            path=target.resolve().relative_to(root).as_posix(),
+            content=content,
+            encoding="utf-8",
+            size_bytes=size,
+        )
 
     def resolve_artifact_path(self, workflow_id: str) -> Path:
         """Resolve and validate the artifact ZIP path for a workflow.

@@ -99,6 +99,49 @@
         border-radius: 8px;
         font-size: 0.85rem;
       }
+      .file-panel {
+        margin: 1rem 0;
+        display: grid;
+        gap: 0.75rem;
+      }
+      .file-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #12181f;
+        max-height: 220px;
+        overflow: auto;
+      }
+      .file-list li { margin: 0; }
+      .file-list button {
+        width: 100%;
+        justify-self: stretch;
+        text-align: left;
+        border: 0;
+        border-radius: 0;
+        border-bottom: 1px solid var(--border);
+        background: transparent;
+        color: var(--accent);
+        font: inherit;
+        font-weight: 500;
+        padding: 0.55rem 0.75rem;
+        cursor: pointer;
+      }
+      .file-list button:hover { background: rgba(61, 154, 120, 0.12); }
+      .file-list button.active { background: rgba(61, 154, 120, 0.22); }
+      .file-list button:last-child { border-bottom: 0; }
+      .file-meta {
+        color: var(--muted);
+        font-size: 0.85rem;
+        margin: 0;
+      }
+      #file-content {
+        min-height: 8rem;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
     </style>
   </head>
   <body>
@@ -123,6 +166,11 @@
       <details class="review" id="review" hidden>
         <summary>Human review controls</summary>
         <p class="lede">Approve, request changes, replan, or abort the paused workflow.</p>
+        <div class="file-panel">
+          <p class="file-meta" id="file-meta">Generated files</p>
+          <ul class="file-list" id="file-list"></ul>
+          <pre id="file-content">Select a file to preview.</pre>
+        </div>
         <label>
           Decision
           <select id="decision">
@@ -143,7 +191,59 @@
       const assistant = document.getElementById("assistant");
       const review = document.getElementById("review");
       const interruptEl = document.getElementById("interrupt");
+      const fileListEl = document.getElementById("file-list");
+      const fileContentEl = document.getElementById("file-content");
+      const fileMetaEl = document.getElementById("file-meta");
       let workflowId = null;
+
+      function clearFilePreview(message) {
+        fileListEl.innerHTML = "";
+        fileContentEl.textContent = message || "Select a file to preview.";
+        fileMetaEl.textContent = "Generated files";
+      }
+
+      async function loadFileTree(id) {
+        clearFilePreview("Loading files…");
+        const res = await fetch(`/runs/${id}/files`);
+        const data = await res.json();
+        if (!res.ok) {
+          fileContentEl.textContent = data.message || "Could not load file tree.";
+          return;
+        }
+        const files = data.files || [];
+        fileMetaEl.textContent = `${files.length} generated file${files.length === 1 ? "" : "s"}`;
+        fileListEl.innerHTML = "";
+        if (!files.length) {
+          fileContentEl.textContent = "No candidate files available yet.";
+          return;
+        }
+        files.forEach((path) => {
+          const li = document.createElement("li");
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = path;
+          button.addEventListener("click", () => openFile(id, path, button));
+          li.appendChild(button);
+          fileListEl.appendChild(li);
+        });
+        fileContentEl.textContent = "Select a file to preview.";
+      }
+
+      async function openFile(id, path, button) {
+        fileListEl.querySelectorAll("button").forEach((el) => el.classList.remove("active"));
+        if (button) button.classList.add("active");
+        fileContentEl.textContent = `Loading ${path}…`;
+        const res = await fetch(
+          `/runs/${id}/files/content?path=${encodeURIComponent(path)}`
+        );
+        const data = await res.json();
+        if (!res.ok) {
+          fileContentEl.textContent = data.message || "Could not read file.";
+          return;
+        }
+        fileMetaEl.textContent = `${data.path} · ${data.size_bytes} bytes`;
+        fileContentEl.textContent = data.content;
+      }
 
       function showResult(data) {
         workflowId = data.workflow_id;
@@ -160,8 +260,10 @@
         if (data.interrupt) {
           review.hidden = false;
           interruptEl.textContent = JSON.stringify(data.interrupt, null, 2);
+          loadFileTree(data.workflow_id);
         } else {
           review.hidden = true;
+          clearFilePreview();
         }
       }
 
