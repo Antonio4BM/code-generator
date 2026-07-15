@@ -87,11 +87,19 @@ def create_reviewer_llm(
     model_name: str | None = None,
     temperature: float = 0.0,
 ) -> BaseChatModel:
-    """Create the default ChatOpenAI model used by the reviewer."""
-    from langchain_openai import ChatOpenAI
+    """Create the default AzureChatOpenAI model used by the reviewer.
 
-    return ChatOpenAI(
-        model=model_name or DEFAULT_REVIEWER_MODEL,
+    Args:
+        model_name: Optional Azure deployment name.
+        temperature: Sampling temperature.
+
+    Returns:
+        A chat model instance.
+    """
+    from codegen_workflow.llm import create_azure_chat_model
+
+    return create_azure_chat_model(
+        model_name=model_name or DEFAULT_REVIEWER_MODEL,
         temperature=temperature,
     )
 

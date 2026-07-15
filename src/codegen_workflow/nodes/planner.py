@@ -164,19 +164,22 @@ def create_planner_llm(
     model_name: str | None = None,
     temperature: float = 0.0,
 ) -> Any:
-    """Create a ChatOpenAI model bound to the ProjectPlan schema.
+    """Create an AzureChatOpenAI model bound to the ProjectPlan schema.
 
     Args:
-        model_name: Optional OpenAI-compatible model id.
+        model_name: Optional Azure deployment name.
         temperature: Sampling temperature (prefer 0 for planning).
 
     Returns:
         A runnable that returns a ``ProjectPlan`` instance.
     """
-    from langchain_openai import ChatOpenAI
+    from codegen_workflow.llm import create_azure_chat_model
 
     name = model_name or DEFAULT_PLANNER_MODEL
-    base: BaseChatModel = ChatOpenAI(model=name, temperature=temperature)
+    base: BaseChatModel = create_azure_chat_model(
+        model_name=name,
+        temperature=temperature,
+    )
     return base.with_structured_output(ProjectPlan)
 
 
