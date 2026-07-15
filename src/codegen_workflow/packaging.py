@@ -12,6 +12,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Iterable
 
+from codegen_workflow.routing import STATUS_COMPLETED, STATUS_PACKAGING_FAILED
 from codegen_workflow.state import WorkflowState
 from codegen_workflow.workspace import candidate_dir, final_dir
 
@@ -32,14 +33,13 @@ EXCLUDED_DIR_NAMES = frozenset(
         "build",
         ".idea",
         ".vscode",
+        "reports",
     }
 )
 
 EXCLUDED_FILE_NAMES = frozenset(
     {
         ".env",
-        ".env.local",
-        ".env.production",
         "credentials.json",
         "secrets.json",
         ".DS_Store",
@@ -53,6 +53,8 @@ EXCLUDED_SUFFIXES = frozenset(
         ".pyd",
         ".so",
         ".egg-info",
+        ".pem",
+        ".key",
     }
 )
 
@@ -147,34 +149,85 @@ def create_zip_archive(
 def package_project_node(state: WorkflowState) -> dict[str, Any]:
     """LangGraph node that packages the approved workspace.
 
-    Copies metadata about the archive into workflow state. Virtual
-    environments, caches, secrets, and temporary reports are excluded.
+    Runs only after final human approval. Virtual environments, caches,
+    secrets, and temporary reports are excluded.
 
     Args:
         state: Workflow state after final human approval.
 
     Returns:
         State update with ``artifact_path``, ``artifact_hash``, and
-        ``status=\"completed\"``.
-
-    Raises:
-        ValueError: If ``workspace_path`` or ``workflow_id`` is missing.
-        FileNotFoundError: If the candidate directory does not exist.
+        ``status=\"completed\"``, or a ``packaging_failed`` update.
     """
+    reviewer_decision = (state.get("reviewer_human_decision") or {}).get("decision")
+    if reviewer_decision != "approve":
+        errors = list(state.get("errors") or [])
+        errors.append(
+            {
+                "type": STATUS_PACKAGING_FAILED,
+                "message": "Packaging requires final human approval",
+            }
+        )
+        return {
+            "status": STATUS_PACKAGING_FAILED,
+            "errors": errors,
+            "artifact_path": None,
+            "artifact_hash": None,
+        }
+
     workspace_path = state.get("workspace_path")
     workflow_id = state.get("workflow_id")
     if not workspace_path or not workflow_id:
-        raise ValueError("workspace_path and workflow_id are required for packaging")
+        errors = list(state.get("errors") or [])
+        errors.append(
+            {
+                "type": STATUS_PACKAGING_FAILED,
+                "message": "workspace_path and workflow_id are required for packaging",
+            }
+        )
+        return {
+            "status": STATUS_PACKAGING_FAILED,
+            "errors": errors,
+            "artifact_path": None,
+            "artifact_hash": None,
+        }
 
     candidate = candidate_dir(workspace_path)
     if not candidate.exists():
-        raise FileNotFoundError(f"Candidate directory not found: {candidate}")
+        errors = list(state.get("errors") or [])
+        errors.append(
+            {
+                "type": STATUS_PACKAGING_FAILED,
+                "message": f"Candidate directory not found: {candidate}",
+            }
+        )
+        return {
+            "status": STATUS_PACKAGING_FAILED,
+            "errors": errors,
+            "artifact_path": None,
+            "artifact_hash": None,
+        }
 
-    archive_path = final_dir(workspace_path) / f"{workflow_id}.zip"
-    artifact_hash = create_zip_archive(candidate, archive_path)
+    try:
+        archive_path = final_dir(workspace_path) / f"{workflow_id}.zip"
+        artifact_hash = create_zip_archive(candidate, archive_path)
+    except OSError as exc:
+        errors = list(state.get("errors") or [])
+        errors.append(
+            {
+                "type": STATUS_PACKAGING_FAILED,
+                "message": str(exc),
+            }
+        )
+        return {
+            "status": STATUS_PACKAGING_FAILED,
+            "errors": errors,
+            "artifact_path": None,
+            "artifact_hash": None,
+        }
 
     return {
         "artifact_path": str(archive_path),
         "artifact_hash": artifact_hash,
-        "status": "completed",
+        "status": STATUS_COMPLETED,
     }
