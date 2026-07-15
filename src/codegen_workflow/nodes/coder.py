@@ -94,19 +94,19 @@ def create_coder_llm(
     model_name: str | None = None,
     temperature: float = 0.0,
 ) -> BaseChatModel:
-    """Create the default ChatOpenAI model used by the coder.
+    """Create the default AzureChatOpenAI model used by the coder.
 
     Args:
-        model_name: Optional OpenAI-compatible model id.
+        model_name: Optional Azure deployment name.
         temperature: Sampling temperature (prefer low for codegen).
 
     Returns:
         A chat model instance that supports ``bind_tools``.
     """
-    from langchain_openai import ChatOpenAI
+    from codegen_workflow.llm import create_azure_chat_model
 
-    return ChatOpenAI(
-        model=model_name or DEFAULT_CODER_MODEL,
+    return create_azure_chat_model(
+        model_name=model_name or DEFAULT_CODER_MODEL,
         temperature=temperature,
     )
 
