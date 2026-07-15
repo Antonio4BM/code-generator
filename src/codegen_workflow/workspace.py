@@ -3,6 +3,10 @@
 Each workflow run owns an isolated directory under ``workspaces/`` with
 subfolders for the candidate project, snapshots, reports, and final
 packaging output. The coder may write only inside ``candidate/``.
+
+When a LangGraph ``thread_id`` is supplied at compile/runtime, that value
+is reused as ``workflow_id`` so checkpoint resumption and workspace paths
+stay aligned.
 """
 
 from __future__ import annotations
@@ -12,7 +16,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from codegen_workflow.routing import MAX_ITERATIONS
+from codegen_workflow.routing import (
+    MAX_ITERATIONS,
+    STATUS_INVALID_INPUT,
+    validate_max_iterations,
+)
 from codegen_workflow.state import WorkflowState
 
 # Default parent directory for workflow workspaces.
@@ -26,7 +34,8 @@ def create_workflow_id() -> str:
     """Generate a new UUID string for a workflow run.
 
     Returns:
-        A UUID4 string used as ``workflow_id`` and ``thread_id``.
+        A UUID4 string used as ``workflow_id`` and preferably as
+        ``thread_id``.
     """
     return str(uuid.uuid4())
 
@@ -151,32 +160,73 @@ def initialize_workspace_node(
     state: WorkflowState,
     *,
     base_dir: Path | str | None = None,
+    workflow_id: str | None = None,
 ) -> dict[str, Any]:
     """LangGraph node that creates a UUID-scoped workspace.
 
-    Generates a workflow UUID, creates the isolated directory layout,
-    and initializes iteration counters and feedback history.
+    Generates a workflow UUID (or reuses the runnable ``thread_id``),
+    creates the isolated directory layout, and initializes iteration
+    counters and feedback history.
 
     Args:
         state: Incoming workflow state. Only ``user_request`` is required.
         base_dir: Optional override for the workspaces parent directory.
+        workflow_id: Optional ID. Prefer aligning this with the LangGraph
+            ``thread_id`` so checkpoints and workspace paths match.
 
     Returns:
-        State update containing workspace identifiers and defaults.
-
-    Raises:
-        ValueError: If ``user_request`` is missing or blank.
+        State update containing workspace identifiers and defaults, or a
+        terminal ``invalid_input`` update when the request is empty.
     """
     user_request = (state.get("user_request") or "").strip()
     if not user_request:
-        raise ValueError("user_request is required and must be non-empty")
+        return {
+            "user_request": state.get("user_request") or "",
+            "status": STATUS_INVALID_INPUT,
+            "errors": [
+                {
+                    "type": STATUS_INVALID_INPUT,
+                    "message": "user_request is required and must be non-empty",
+                }
+            ],
+            "feedback_history": [],
+            "iteration": 0,
+            "max_iterations": MAX_ITERATIONS,
+            "artifact_path": None,
+            "artifact_hash": None,
+        }
 
-    workflow_id, workspace_path = create_workspace(base_dir=base_dir)
-    max_iterations = int(state.get("max_iterations") or MAX_ITERATIONS)
+    raw_max = state.get("max_iterations")
+    if raw_max is None:
+        max_iterations = MAX_ITERATIONS
+    else:
+        try:
+            max_iterations = validate_max_iterations(int(raw_max))
+        except (TypeError, ValueError) as exc:
+            return {
+                "user_request": user_request,
+                "status": STATUS_INVALID_INPUT,
+                "errors": [
+                    {
+                        "type": STATUS_INVALID_INPUT,
+                        "message": str(exc),
+                    }
+                ],
+                "feedback_history": [],
+                "iteration": 0,
+                "max_iterations": MAX_ITERATIONS,
+                "artifact_path": None,
+                "artifact_hash": None,
+            }
+
+    wf_id, workspace_path = create_workspace(
+        workflow_id=workflow_id,
+        base_dir=base_dir,
+    )
 
     return {
         "user_request": user_request,
-        "workflow_id": workflow_id,
+        "workflow_id": wf_id,
         "workspace_path": str(workspace_path),
         "plan": {},
         "planner_feedback": [],
