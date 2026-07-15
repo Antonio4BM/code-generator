@@ -12,3 +12,5 @@ build/
 .coverage
 htmlcov/
 .vscode/
+.env.example
+.env
