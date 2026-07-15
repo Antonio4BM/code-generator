@@ -12,6 +12,7 @@ from codegen_workflow.schemas.plan import (
     collect_plan_validation_errors,
     validate_plan,
 )
+from codegen_workflow.schemas.review import ReviewFinding, ReviewReport
 from codegen_workflow.schemas.verification import CommandResult, VerificationReport
 
 __all__ = [
@@ -24,6 +25,8 @@ __all__ = [
     "ImplementationTask",
     "PlanValidationError",
     "ProjectPlan",
+    "ReviewFinding",
+    "ReviewReport",
     "UserStory",
     "VerificationReport",
     "collect_plan_validation_errors",
