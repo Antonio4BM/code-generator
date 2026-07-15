@@ -23,7 +23,7 @@ from codegen_workflow.api.logging_config import (
     new_request_id,
     redact_secrets,
 )
-from codegen_workflow.api.routes import artifacts, health, runs
+from codegen_workflow.api.routes import artifacts, files, health, runs
 from codegen_workflow.api.service import WorkflowService
 from codegen_workflow.graph import create_workflow
 
@@ -164,6 +164,7 @@ def create_app(
     app.include_router(health.router)
     app.include_router(runs.router)
     app.include_router(artifacts.router)
+    app.include_router(files.router)
 
     if _STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
