@@ -18,7 +18,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from codegen_workflow.api.config import APISettings
 from codegen_workflow.api.errors import APIError, APIErrorDetail, error_body
 from codegen_workflow.api.logging_config import (
-    RequestContextFilter,
     configure_logging,
     log_extra,
     new_request_id,
@@ -89,7 +88,6 @@ def create_app(
     """
     settings = settings or APISettings.from_env()
     configure_logging(settings.log_level)
-    logging.getLogger().addFilter(RequestContextFilter())
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
