@@ -6,6 +6,13 @@ reviewer → packaging with deterministic, bounded routing.
 
 Checkpointing is used for durable workflow state, interruption,
 recovery, and resumption — not as chat-memory storage.
+
+``thread_id`` alignment
+    Prefer using a UUID as the LangGraph runnable ``thread_id``. The
+    initialize node reuses that value as ``workflow_id`` so the
+    checkpoint thread, workspace directory, and artifact names stay
+    aligned. Callers may use :func:`run_config_for_thread` to build the
+    config dict.
 """
 
 from __future__ import annotations
@@ -13,7 +20,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph._node import StateNode
 from langgraph.graph.state import CompiledStateGraph
@@ -26,11 +34,25 @@ from codegen_workflow.nodes.verification import verification_node
 from codegen_workflow.packaging import package_project_node
 from codegen_workflow.routing import (
     route_after_coder_gate,
+    route_after_initialize,
     route_after_planner,
     route_after_reviewer_gate,
 )
 from codegen_workflow.state import WorkflowState
-from codegen_workflow.workspace import initialize_workspace_node
+from codegen_workflow.workspace import create_workflow_id, initialize_workspace_node
+
+
+def run_config_for_thread(thread_id: str | None = None) -> dict[str, Any]:
+    """Build a runnable config with a UUID ``thread_id``.
+
+    Args:
+        thread_id: Optional existing thread ID. When omitted, a new UUID
+            is generated and should be reused for all resumes of the run.
+
+    Returns:
+        Config dict suitable for ``invoke`` / ``stream``.
+    """
+    return {"configurable": {"thread_id": thread_id or create_workflow_id()}}
 
 
 def build_graph(
@@ -59,10 +81,16 @@ def build_graph(
         ``thread_id`` in the runnable config.
     """
     if checkpointer is None:
-        checkpointer = MemorySaver()
+        checkpointer = InMemorySaver()
 
-    def _initialize(state: WorkflowState) -> dict[str, Any]:
-        return initialize_workspace_node(state, base_dir=workspace_base_dir)
+    def _initialize(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
+        thread_id = (config.get("configurable") or {}).get("thread_id")
+        aligned_id = str(thread_id) if thread_id else None
+        return initialize_workspace_node(
+            state,
+            base_dir=workspace_base_dir,
+            workflow_id=aligned_id,
+        )
 
     graph = StateGraph(WorkflowState)
 
@@ -88,7 +116,14 @@ def build_graph(
     graph.add_node("package_project", package_project_node)
 
     graph.add_edge(START, "initialize_workspace")
-    graph.add_edge("initialize_workspace", "planner")
+    graph.add_conditional_edges(
+        "initialize_workspace",
+        route_after_initialize,
+        {
+            "planner": "planner",
+            "__end__": END,
+        },
+    )
     graph.add_conditional_edges(
         "planner",
         route_after_planner,

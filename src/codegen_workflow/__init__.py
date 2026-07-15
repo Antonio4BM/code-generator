@@ -5,9 +5,10 @@ deterministic verification, human approval gates, workspace management,
 and packaging into a bounded, interruptible workflow graph.
 """
 
-from codegen_workflow.graph import build_graph, create_workflow
+from codegen_workflow.graph import build_graph, create_workflow, run_config_for_thread
 
 __all__ = [
     "build_graph",
     "create_workflow",
+    "run_config_for_thread",
 ]
