@@ -13,20 +13,52 @@ _SECRET_PATTERNS = (
 )
 
 
+class ContextFormatter(logging.Formatter):
+    """Formatter that supplies default correlation fields when absent."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Format a record, filling missing API correlation attributes.
+
+        Args:
+            record: Log record being emitted.
+
+        Returns:
+            Formatted log line.
+        """
+        if not hasattr(record, "request_id"):
+            record.request_id = "-"
+        if not hasattr(record, "workflow_id"):
+            record.workflow_id = "-"
+        if not hasattr(record, "endpoint"):
+            record.endpoint = "-"
+        return super().format(record)
+
+
 def configure_logging(level: str = "INFO") -> None:
     """Configure root logging for structured API messages.
+
+    Correlation fields are filled by :class:`ContextFormatter` so non-API
+    loggers (planner/coder/reviewer) do not crash the logging subsystem.
 
     Args:
         level: Logging level name such as ``INFO`` or ``DEBUG``.
     """
-    logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
-        format=(
-            "%(asctime)s %(levelname)s %(name)s "
-            "request_id=%(request_id)s workflow_id=%(workflow_id)s "
-            "endpoint=%(endpoint)s %(message)s"
-        ),
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, level.upper(), logging.INFO))
+    formatter = ContextFormatter(
+        "%(asctime)s %(levelname)s %(name)s "
+        "request_id=%(request_id)s workflow_id=%(workflow_id)s "
+        "endpoint=%(endpoint)s %(message)s"
     )
+    if not root.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(formatter)
+        handler.addFilter(RequestContextFilter())
+        root.addHandler(handler)
+    else:
+        for handler in root.handlers:
+            handler.setFormatter(formatter)
+            handler.addFilter(RequestContextFilter())
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 
