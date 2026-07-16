@@ -9,6 +9,10 @@ State invariants:
 - ``iteration`` increments only when the coder completes an attempt.
 - ``feedback_history`` is append-only.
 - Agent nodes return partial state updates only.
+- ``plan`` is always the authoritative complete project plan.
+- ``previous_plan`` / ``plan_diff`` describe the latest planner revision
+  and stay available through verification; a new ``change_request``
+  clears stale revision fields before the next planner revision.
 """
 
 from __future__ import annotations
@@ -25,6 +29,9 @@ class WorkflowState(TypedDict, total=False):
             the LangGraph ``thread_id`` when practical).
         workspace_path: Absolute path to the isolated workspace root.
         plan: Validated project plan produced by the planner.
+        previous_plan: Authoritative plan before the latest revision.
+        change_request: Latest human-requested structural modification.
+        plan_diff: Deterministic manifest diff for the latest revision.
         planner_feedback: Feedback strings used when replanning.
         generated_files: Relative paths of files written by the coder.
         file_hashes: SHA-256 hashes keyed by generated file path.
@@ -47,6 +54,9 @@ class WorkflowState(TypedDict, total=False):
     workflow_id: str
     workspace_path: str
     plan: dict[str, Any]
+    previous_plan: dict[str, Any]
+    change_request: dict[str, Any]
+    plan_diff: dict[str, Any]
     planner_feedback: list[str]
     generated_files: list[str]
     file_hashes: dict[str, str]

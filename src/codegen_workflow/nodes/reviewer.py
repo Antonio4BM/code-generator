@@ -476,7 +476,12 @@ def reviewer_node(
             max_tool_calls=max_tool_calls,
             max_model_retries=max_model_retries,
         )
-        structured = model.with_structured_output(ReviewReport)
+        # function_calling avoids Azure/OpenAI strict json_schema limits
+        # (dict[str, bool] / optional nested fields are rejected by
+        # response_format structured outputs).
+        structured = model.with_structured_output(
+            ReviewReport, method="function_calling"
+        )
         messages.append(
             HumanMessage(
                 content=(

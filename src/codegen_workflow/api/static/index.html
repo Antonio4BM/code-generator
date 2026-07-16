@@ -92,6 +92,15 @@
         cursor: pointer;
         color: var(--muted);
       }
+      .gate-banner {
+        margin: 0 0 1rem;
+        color: var(--text);
+        font-size: 0.95rem;
+        line-height: 1.45;
+      }
+      .assistant a {
+        color: var(--accent);
+      }
       .review pre {
         overflow: auto;
         background: #12181f;
@@ -165,7 +174,7 @@
       <div class="assistant" id="assistant" hidden></div>
       <details class="review" id="review" hidden>
         <summary>Human review controls</summary>
-        <p class="lede">Approve, request changes, replan, or abort the paused workflow.</p>
+        <p class="gate-banner" id="gate-banner"></p>
         <div class="file-panel">
           <p class="file-meta" id="file-meta">Generated files</p>
           <ul class="file-list" id="file-list"></ul>
@@ -180,7 +189,10 @@
             <option value="abort">abort</option>
           </select>
         </label>
-        <textarea id="feedback" placeholder="Optional feedback (required for changes/replan)"></textarea>
+        <label id="feedback-label">
+          Feedback
+          <textarea id="feedback" placeholder="Required for request_changes / replan"></textarea>
+        </label>
         <button type="button" id="decide">Submit decision</button>
       </details>
     </main>
@@ -192,7 +204,23 @@
       const fileListEl = document.getElementById("file-list");
       const fileContentEl = document.getElementById("file-content");
       const fileMetaEl = document.getElementById("file-meta");
+      const decisionEl = document.getElementById("decision");
+      const feedbackEl = document.getElementById("feedback");
+      const feedbackLabel = document.getElementById("feedback-label");
+      const gateBanner = document.getElementById("gate-banner");
       let workflowId = null;
+
+      function syncFeedbackField() {
+        const needsFeedback =
+          decisionEl.value === "request_changes" || decisionEl.value === "replan";
+        feedbackEl.disabled = !needsFeedback;
+        feedbackLabel.hidden = !needsFeedback;
+        if (!needsFeedback) {
+          feedbackEl.value = "";
+        }
+      }
+      decisionEl.addEventListener("change", syncFeedbackField);
+      syncFeedbackField();
 
       function clearFilePreview(message) {
         fileListEl.innerHTML = "";
@@ -243,20 +271,45 @@
         fileContentEl.textContent = data.content;
       }
 
+      function gateCopy(interrupt) {
+        const gate = interrupt && interrupt.gate;
+        if (gate === "coder") {
+          return "Gate: coder — approve to run the automated reviewer next.";
+        }
+        if (gate === "reviewer") {
+          return "Gate: reviewer — approve to package the ZIP and enable download.";
+        }
+        return "Approve, request changes, replan, or abort the paused workflow.";
+      }
+
+      function renderAssistant(data) {
+        assistant.hidden = false;
+        assistant.replaceChildren();
+        const message = document.createElement("div");
+        message.textContent = data.message || "";
+        assistant.appendChild(message);
+        if (data.artifact_url) {
+          const link = document.createElement("a");
+          link.href = data.artifact_url;
+          link.textContent = "Download project ZIP";
+          link.style.display = "inline-block";
+          link.style.marginTop = "0.75rem";
+          assistant.appendChild(link);
+        }
+      }
+
       function showResult(data) {
         workflowId = data.workflow_id;
         statusEl.textContent = `Status: ${data.status}`;
-        assistant.hidden = false;
-        let text = data.message || "";
-        if (data.artifact_url) {
-          text += `\n\nDownload: ${data.artifact_url}`;
-        }
-        assistant.textContent = text;
+        renderAssistant(data);
         if (data.interrupt) {
           review.hidden = false;
+          review.open = true;
+          gateBanner.textContent = gateCopy(data.interrupt);
           loadFileTree(data.workflow_id);
         } else {
           review.hidden = true;
+          gateBanner.textContent = "";
           clearFilePreview();
         }
       }
@@ -289,12 +342,19 @@
 
       document.getElementById("decide").addEventListener("click", async () => {
         if (!workflowId) return;
+        const decision = decisionEl.value;
+        const needsFeedback =
+          decision === "request_changes" || decision === "replan";
+        if (needsFeedback && !feedbackEl.value.trim()) {
+          statusEl.textContent = "Feedback is required for this decision.";
+          return;
+        }
         const res = await fetch(`/runs/${workflowId}/decision`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            decision: document.getElementById("decision").value,
-            feedback: document.getElementById("feedback").value,
+            decision,
+            feedback: needsFeedback ? feedbackEl.value : "",
           }),
         });
         const data = await res.json();

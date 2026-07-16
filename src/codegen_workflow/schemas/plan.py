@@ -64,6 +64,52 @@ _DEP_CONFIG_NAMES = {
     "build.gradle.kts",
 }
 
+# Languages / architectures treated as markup-first (tests & package managers optional).
+_STATIC_MARKUP_LANGUAGES = frozenset(
+    {
+        "html",
+        "css",
+        "markdown",
+        "md",
+        "static",
+        "static html",
+        "static-site",
+        "static site",
+    }
+)
+_STATIC_ARCH_HINTS = (
+    "static",
+    "static site",
+    "static-site",
+    "static html",
+    "landing page",
+    "markup",
+)
+_STATIC_SOURCE_SUFFIXES = (
+    ".html",
+    ".htm",
+    ".css",
+    ".scss",
+    ".sass",
+    ".less",
+    ".md",
+    ".txt",
+    ".svg",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".ico",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+)
+# Optional static JS helpers still count as markup-site assets when language is HTML.
+_STATIC_OPTIONAL_SCRIPT_SUFFIXES = (".js", ".mjs", ".ts")
+
+
 
 class PlanValidationError(ValueError):
     """Raised when a project plan fails deterministic validation."""
@@ -273,8 +319,66 @@ def _is_test_file(spec: FileSpecification) -> bool:
     )
 
 
+def _is_static_asset_path(path: str) -> bool:
+    """Return whether a path looks like a static-site asset."""
+    lowered = path.lower().replace("\\", "/")
+    basename = lowered.rsplit("/", 1)[-1]
+    if not basename or basename.endswith("/"):
+        return True
+    suffixes = _STATIC_SOURCE_SUFFIXES + _STATIC_OPTIONAL_SCRIPT_SUFFIXES
+    return any(basename.endswith(suffix) for suffix in suffixes) or basename in {
+        "robots.txt",
+        "favicon.ico",
+        "sitemap.xml",
+        "manifest.json",
+    }
+
+
+def is_static_markup_project(plan: ProjectPlan) -> bool:
+    """Return whether the plan describes a static markup / content site.
+
+    Used for prompting and heuristics. Automated tests and dependency
+    configuration are optional for all plans; this helper still identifies
+    markup-first projects.
+
+    Args:
+        plan: Candidate project plan.
+
+    Returns:
+        ``True`` when language/architecture and file manifest indicate a
+        static markup site rather than an application codebase.
+    """
+    language = (plan.language or "").strip().lower()
+    architecture = (plan.architecture_pattern or "").strip().lower()
+    language_static = language in _STATIC_MARKUP_LANGUAGES
+    architecture_static = any(hint in architecture for hint in _STATIC_ARCH_HINTS)
+    if not (language_static or architecture_static):
+        return False
+
+    if plan.dependencies:
+        return False
+    if any(_is_dependency_config(spec) for spec in plan.file_manifest):
+        return False
+
+    sourceish = [
+        spec
+        for spec in plan.file_manifest
+        if spec.file_type in {"source", "other", "configuration"}
+        and not _is_documentation_file(spec)
+        and not _is_test_file(spec)
+    ]
+    if not sourceish:
+        return language_static or architecture_static
+
+    return all(_is_static_asset_path(spec.path) for spec in sourceish)
+
+
 def collect_plan_validation_errors(plan: ProjectPlan) -> list[str]:
     """Return deterministic validation errors for a project plan.
+
+    Automated tests, paired source/test tasks, and dependency-configuration
+    files are optional so static→API revisions can proceed with simpler
+    plans. Documentation and non-empty validation_commands remain required.
 
     Args:
         plan: Structured plan produced by the planner model.
@@ -333,16 +437,6 @@ def collect_plan_validation_errors(plan: ProjectPlan) -> list[str]:
             errors.append(f"duplicate file path: {spec.path!r}")
         seen_paths.add(path)
 
-    source_story_ids = {
-        task.story_id for task in plan.tasks if task.task_type == "source"
-    }
-    test_story_ids = {task.story_id for task in plan.tasks if task.task_type == "test"}
-    for story_id in sorted(source_story_ids):
-        if story_id not in test_story_ids:
-            errors.append(
-                f"story {story_id!r} has source tasks but no associated test task"
-            )
-
     def check_criteria(label: str, criteria: list[str]) -> None:
         for index, criterion in enumerate(criteria):
             if not _is_measurable_criterion(criterion):
@@ -363,10 +457,6 @@ def collect_plan_validation_errors(plan: ProjectPlan) -> list[str]:
 
     if not any(_is_documentation_file(spec) for spec in plan.file_manifest):
         errors.append("file_manifest must include project documentation")
-    if not any(_is_dependency_config(spec) for spec in plan.file_manifest):
-        errors.append("file_manifest must include dependency configuration")
-    if not any(_is_test_file(spec) for spec in plan.file_manifest):
-        errors.append("file_manifest must include automated tests")
 
     return errors
 

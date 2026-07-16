@@ -201,10 +201,19 @@ def coder_human_gate(state: WorkflowState) -> dict[str, Any]:
         "feedback_history": history,
     }
     feedback = (decision.get("feedback") or "").strip()
-    if decision["decision"] == "replan" and feedback:
-        planner_feedback = list(state.get("planner_feedback") or [])
-        planner_feedback.append(feedback)
-        update["planner_feedback"] = planner_feedback
+    if decision["decision"] in {"request_changes", "replan"}:
+        # Clear stale revision fields before the planner revises again.
+        update["previous_plan"] = {}
+        update["plan_diff"] = {}
+        update["change_request"] = {
+            "feedback": feedback,
+            "source_gate": "coder",
+            "iteration": iteration,
+        }
+        if feedback:
+            planner_feedback = list(state.get("planner_feedback") or [])
+            planner_feedback.append(feedback)
+            update["planner_feedback"] = planner_feedback
 
     status = status_for_terminal_gate("coder", {**state, **update})
     update["status"] = status
@@ -270,10 +279,18 @@ def reviewer_human_gate(state: WorkflowState) -> dict[str, Any]:
         "feedback_history": history,
     }
     feedback = (decision.get("feedback") or "").strip()
-    if decision["decision"] == "replan" and feedback:
-        planner_feedback = list(state.get("planner_feedback") or [])
-        planner_feedback.append(feedback)
-        update["planner_feedback"] = planner_feedback
+    if decision["decision"] in {"request_changes", "replan"}:
+        update["previous_plan"] = {}
+        update["plan_diff"] = {}
+        update["change_request"] = {
+            "feedback": feedback,
+            "source_gate": "reviewer",
+            "iteration": iteration,
+        }
+        if feedback:
+            planner_feedback = list(state.get("planner_feedback") or [])
+            planner_feedback.append(feedback)
+            update["planner_feedback"] = planner_feedback
 
     status = status_for_terminal_gate("reviewer", {**state, **update})
     update["status"] = status

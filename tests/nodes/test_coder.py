@@ -725,3 +725,31 @@ def test_missing_plan_fails(workspace: tuple[str, Path]) -> None:
     )
     assert result["status"] == "coder_failed"
     assert result["errors"][0]["type"] == "invalid_input"
+
+
+def test_plan_revision_prompt_contains_manifest_diff() -> None:
+    """Plan-revision prompts list added/removed files and authority text."""
+    from codegen_workflow.nodes.coder import build_coder_prompt
+    from codegen_workflow.schemas.plan import ProjectPlan
+
+    plan = ProjectPlan.model_validate(_valid_plan_dict())
+    prompt = build_coder_prompt(
+        user_request="Build demo",
+        plan=plan,
+        iteration=1,
+        existing_files=["src/demo_app/main.py", "README.md"],
+        findings=[],
+        mode="plan_revision",
+        plan_diff={
+            "added": ["src/demo_app/auth.py"],
+            "removed": ["src/demo_app/legacy.py"],
+            "retained": ["src/demo_app/main.py", "README.md"],
+        },
+    )
+    assert "plan_revision" in prompt
+    assert "revised plan is authoritative" in prompt.lower() or (
+        "The revised plan is authoritative" in prompt
+    )
+    assert "src/demo_app/auth.py" in prompt
+    assert "src/demo_app/legacy.py" in prompt
+    assert "Manifest changes" in prompt

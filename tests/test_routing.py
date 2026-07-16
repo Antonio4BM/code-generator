@@ -84,14 +84,14 @@ def test_coder_approval_routes_to_reviewer() -> None:
     assert route_after_coder_gate(state) == "reviewer"
 
 
-def test_coder_request_changes_routes_to_coder() -> None:
-    """Coder-gate request_changes loops back to the coder."""
+def test_coder_request_changes_routes_to_planner() -> None:
+    """Coder-gate request_changes enters planner revision mode."""
     state = {
         "coder_human_decision": {"decision": "request_changes"},
         "iteration": 1,
         "max_iterations": 4,
     }
-    assert route_after_coder_gate(state) == "coder"
+    assert route_after_coder_gate(state) == "planner"
 
 
 def test_coder_replan_routes_to_planner() -> None:
@@ -116,14 +116,14 @@ def test_reviewer_approval_routes_to_packaging() -> None:
     assert route_after_reviewer_gate(state) == "package_project"
 
 
-def test_reviewer_request_changes_routes_to_coder() -> None:
-    """Reviewer-gate request_changes routes back to the coder."""
+def test_reviewer_request_changes_routes_to_planner() -> None:
+    """Reviewer-gate request_changes enters planner revision mode."""
     state = {
         "reviewer_human_decision": {"decision": "request_changes"},
         "iteration": 1,
         "max_iterations": 4,
     }
-    assert route_after_reviewer_gate(state) == "coder"
+    assert route_after_reviewer_gate(state) == "planner"
 
 
 def test_reviewer_replan_routes_to_planner() -> None:
