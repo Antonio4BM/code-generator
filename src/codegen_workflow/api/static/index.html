@@ -273,11 +273,11 @@
 
       function gateCopy(interrupt) {
         const gate = interrupt && interrupt.gate;
-        if (gate === "coder") {
-          return "Gate: coder — approve to run the automated reviewer next.";
-        }
         if (gate === "reviewer") {
-          return "Gate: reviewer — approve to package the ZIP and enable download.";
+          return (
+            "Automated review is done. Inspect the files, then approve to " +
+            "download the ZIP, or request changes / replan."
+          );
         }
         return "Approve, request changes, replan, or abort the paused workflow.";
       }

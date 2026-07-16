@@ -14,18 +14,12 @@ from tests.api.conftest import mock_coder, mock_planner, mock_reviewer, mock_ver
 
 
 def test_happy_path_to_artifact(client: TestClient) -> None:
-    """Full happy path from ticket through both gates to artifact download."""
+    """Full happy path: auto-review, one human approve, then download."""
     started = client.post("/run-ticket", json={"ticket": "Build a hello CLI"})
     assert started.status_code == 202
-    assert started.json()["status"] == "awaiting_coder_approval"
+    assert started.json()["status"] == "awaiting_reviewer_approval"
+    assert started.json()["interrupt"]["gate"] == "reviewer"
     workflow_id = started.json()["workflow_id"]
-
-    after_coder = client.post(
-        f"/runs/{workflow_id}/decision",
-        json={"decision": "approve"},
-    )
-    assert after_coder.status_code == 202
-    assert after_coder.json()["status"] == "awaiting_reviewer_approval"
 
     completed = client.post(
         f"/runs/{workflow_id}/decision",
@@ -44,13 +38,14 @@ def test_revision_path(
     api_settings: APISettings,
     workspace_root,
 ) -> None:
-    """request_changes re-runs the coder before final approvals."""
+    """request_changes re-runs planner/coder/review before packaging."""
     coder = MagicMock(side_effect=mock_coder)
+    reviewer = MagicMock(side_effect=mock_reviewer)
     graph = build_graph(
         checkpointer=InMemorySaver(),
         planner=mock_planner,
         coder=coder,
-        reviewer=mock_reviewer,
+        reviewer=reviewer,
         verify=mock_verify,
         workspace_base_dir=workspace_root,
     )
@@ -58,22 +53,18 @@ def test_revision_path(
     with TestClient(app) as client:
         started = client.post("/run-ticket", json={"ticket": "Build a hello CLI"})
         workflow_id = started.json()["workflow_id"]
-        assert started.json()["status"] == "awaiting_coder_approval"
+        assert started.json()["status"] == "awaiting_reviewer_approval"
         assert coder.call_count == 1
+        assert reviewer.call_count == 1
 
         revised = client.post(
             f"/runs/{workflow_id}/decision",
             json={"decision": "request_changes", "feedback": "add README"},
         )
         assert revised.status_code == 202
-        assert revised.json()["status"] == "awaiting_coder_approval"
+        assert revised.json()["status"] == "awaiting_reviewer_approval"
         assert coder.call_count == 2
-
-        after_coder = client.post(
-            f"/runs/{workflow_id}/decision",
-            json={"decision": "approve"},
-        )
-        assert after_coder.json()["status"] == "awaiting_reviewer_approval"
+        assert reviewer.call_count == 2
 
         completed = client.post(
             f"/runs/{workflow_id}/decision",

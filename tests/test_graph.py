@@ -125,7 +125,7 @@ def _mock_verify(state: dict[str, Any]) -> dict[str, Any]:
             ],
             "errors": [],
         },
-        "status": "awaiting_coder_approval",
+        "status": "reviewing",
     }
 
 
@@ -157,8 +157,8 @@ def _graph(tmp_path: Path, **overrides: Any):
     )
 
 
-def _run_to_coder_gate(graph, thread_id: str, request: str = "Build a hello CLI"):
-    """Invoke until the first coder human-gate interrupt."""
+def _run_to_human_gate(graph, thread_id: str, request: str = "Build a hello CLI"):
+    """Invoke until the human gate interrupt (after automated review)."""
     config = {"configurable": {"thread_id": thread_id}}
     result = graph.invoke({"user_request": request}, config=config)
     return result, config
@@ -167,12 +167,12 @@ def _run_to_coder_gate(graph, thread_id: str, request: str = "Build a hello CLI"
 def test_plain_text_workflow_startup(tmp_path: Path) -> None:
     """Workflow accepts only user_request and starts successfully."""
     graph = _graph(tmp_path)
-    result, config = _run_to_coder_gate(graph, "startup-1")
+    result, config = _run_to_human_gate(graph, "startup-1")
     assert "__interrupt__" in result
     state = graph.get_state(config).values
     assert state["user_request"] == "Build a hello CLI"
     assert state["workflow_id"] == "startup-1"
-    assert state["status"] == "awaiting_coder_approval"
+    assert state["status"] == "awaiting_reviewer_approval"
 
 
 def test_empty_request_rejected_by_graph(tmp_path: Path) -> None:
@@ -225,7 +225,7 @@ def test_planner_to_coder_routing(tmp_path: Path) -> None:
     """After planning, the coder node executes (never skipped)."""
     coder = MagicMock(side_effect=_mock_coder)
     graph = _graph(tmp_path, coder=coder)
-    _run_to_coder_gate(graph, "planner-coder-1")
+    _run_to_human_gate(graph, "planner-coder-1")
     assert coder.call_count == 1
 
 
@@ -233,41 +233,39 @@ def test_coder_to_verification_routing(tmp_path: Path) -> None:
     """Coder always flows into verification."""
     verify = MagicMock(side_effect=_mock_verify)
     graph = _graph(tmp_path, verify=verify)
-    _run_to_coder_gate(graph, "coder-verify-1")
+    _run_to_human_gate(graph, "coder-verify-1")
     assert verify.call_count == 1
 
 
 def test_verification_to_human_gate_routing(tmp_path: Path) -> None:
-    """Verification is followed by an interrupt at the coder human gate."""
-    graph = _graph(tmp_path)
-    result, _ = _run_to_coder_gate(graph, "verify-gate-1")
+    """Verification and automated review precede the sole human gate."""
+    reviewer = MagicMock(side_effect=_mock_reviewer)
+    graph = _graph(tmp_path, reviewer=reviewer)
+    result, _ = _run_to_human_gate(graph, "verify-gate-1")
     interrupt = result["__interrupt__"][0]
     payload = interrupt.value
-    assert payload["gate"] == "coder"
+    assert reviewer.call_count == 1
+    assert payload["gate"] == "reviewer"
     assert "verification_report" in payload
+    assert "review_report" in payload
     assert "generated_file_tree" in payload
 
 
-def test_coder_approval_to_reviewer(tmp_path: Path) -> None:
-    """Approving at the coder gate invokes the reviewer."""
+def test_verify_routes_to_reviewer_before_human_gate(tmp_path: Path) -> None:
+    """Automated reviewer runs before any human interrupt."""
     reviewer = MagicMock(side_effect=_mock_reviewer)
     graph = _graph(tmp_path, reviewer=reviewer)
-    _, config = _run_to_coder_gate(graph, "approve-reviewer-1")
-    result = graph.invoke(
-        Command(resume={"decision": "approve", "feedback": "ok"}),
-        config=config,
-    )
+    result, _ = _run_to_human_gate(graph, "auto-review-1")
     assert reviewer.call_count == 1
-    assert "__interrupt__" in result
     assert result["__interrupt__"][0].value["gate"] == "reviewer"
 
 
-def test_coder_change_request_to_planner_then_coder(tmp_path: Path) -> None:
+def test_human_change_request_to_planner_then_coder(tmp_path: Path) -> None:
     """request_changes routes through planner revision then coder."""
     planner = MagicMock(side_effect=_mock_planner)
     coder = MagicMock(side_effect=_mock_coder)
     graph = _graph(tmp_path, planner=planner, coder=coder)
-    _, config = _run_to_coder_gate(graph, "changes-coder-1")
+    _, config = _run_to_human_gate(graph, "changes-coder-1")
     assert planner.call_count == 1
     assert coder.call_count == 1
     graph.invoke(
@@ -281,11 +279,11 @@ def test_coder_change_request_to_planner_then_coder(tmp_path: Path) -> None:
     assert "plan_diff" in state
 
 
-def test_coder_replan_to_planner(tmp_path: Path) -> None:
-    """replan at the coder gate returns to the planner (same revision path)."""
+def test_human_replan_to_planner(tmp_path: Path) -> None:
+    """replan at the human gate returns to the planner."""
     planner = MagicMock(side_effect=_mock_planner)
     graph = _graph(tmp_path, planner=planner)
-    _, config = _run_to_coder_gate(graph, "replan-planner-1")
+    _, config = _run_to_human_gate(graph, "replan-planner-1")
     assert planner.call_count == 1
     graph.invoke(
         Command(resume={"decision": "replan", "feedback": "switch to FastAPI"}),
@@ -297,15 +295,10 @@ def test_coder_replan_to_planner(tmp_path: Path) -> None:
     assert state.get("plan_diff") is not None
 
 
-
 def test_reviewer_approval_to_packaging(tmp_path: Path) -> None:
-    """Final human approval packages a ZIP artifact."""
+    """Human approve packages a ZIP artifact for download."""
     graph = _graph(tmp_path)
-    _, config = _run_to_coder_gate(graph, "package-1")
-    graph.invoke(
-        Command(resume={"decision": "approve", "feedback": ""}),
-        config=config,
-    )
+    _, config = _run_to_human_gate(graph, "package-1")
     final = graph.invoke(
         Command(resume={"decision": "approve", "feedback": ""}),
         config=config,
@@ -320,15 +313,11 @@ def test_reviewer_approval_to_packaging(tmp_path: Path) -> None:
 
 
 def test_reviewer_change_request_to_planner_then_coder(tmp_path: Path) -> None:
-    """request_changes at the reviewer gate revises via planner then coder."""
+    """request_changes at the human gate revises via planner then coder."""
     planner = MagicMock(side_effect=_mock_planner)
     coder = MagicMock(side_effect=_mock_coder)
     graph = _graph(tmp_path, planner=planner, coder=coder)
-    _, config = _run_to_coder_gate(graph, "review-changes-1")
-    graph.invoke(
-        Command(resume={"decision": "approve", "feedback": ""}),
-        config=config,
-    )
+    _, config = _run_to_human_gate(graph, "review-changes-1")
     assert planner.call_count == 1
     assert coder.call_count == 1
     graph.invoke(
@@ -415,7 +404,7 @@ def test_add_feature_request_changes_flow(tmp_path: Path) -> None:
         }
 
     graph = _graph(tmp_path, planner=planner, coder=coder)
-    _, config = _run_to_coder_gate(graph, "add-auth-1", "Build a small app")
+    _, config = _run_to_human_gate(graph, "add-auth-1", "Build a small app")
     graph.invoke(
         Command(
             resume={
@@ -510,7 +499,7 @@ def test_remove_feature_request_changes_flow(tmp_path: Path) -> None:
         }
 
     graph = _graph(tmp_path, planner=planner, coder=coder)
-    _, config = _run_to_coder_gate(graph, "remove-pay-1", "Build payments app")
+    _, config = _run_to_human_gate(graph, "remove-pay-1", "Build payments app")
 
     # Seed payment files that the revision must delete.
     first = graph.get_state(config).values
@@ -538,14 +527,10 @@ def test_remove_feature_request_changes_flow(tmp_path: Path) -> None:
 
 
 def test_reviewer_replan_to_planner(tmp_path: Path) -> None:
-    """replan at the reviewer gate returns to the planner."""
+    """replan at the human gate returns to the planner."""
     planner = MagicMock(side_effect=_mock_planner)
     graph = _graph(tmp_path, planner=planner)
-    _, config = _run_to_coder_gate(graph, "review-replan-1")
-    graph.invoke(
-        Command(resume={"decision": "approve", "feedback": ""}),
-        config=config,
-    )
+    _, config = _run_to_human_gate(graph, "review-replan-1")
     assert planner.call_count == 1
     graph.invoke(
         Command(resume={"decision": "replan", "feedback": "new architecture"}),
@@ -555,9 +540,9 @@ def test_reviewer_replan_to_planner(tmp_path: Path) -> None:
 
 
 def test_abort_routing(tmp_path: Path) -> None:
-    """Abort at the coder gate ends without packaging."""
+    """Abort at the human gate ends without packaging."""
     graph = _graph(tmp_path)
-    _, config = _run_to_coder_gate(graph, "abort-1")
+    _, config = _run_to_human_gate(graph, "abort-1")
     final = graph.invoke(
         Command(resume={"decision": "abort", "feedback": "stop"}),
         config=config,
@@ -568,26 +553,10 @@ def test_abort_routing(tmp_path: Path) -> None:
     assert not final.get("artifact_path")
 
 
-def test_abort_routing_from_reviewer_gate(tmp_path: Path) -> None:
-    """Abort at the reviewer gate ends without packaging."""
-    graph = _graph(tmp_path)
-    _, config = _run_to_coder_gate(graph, "abort-reviewer-1")
-    graph.invoke(
-        Command(resume={"decision": "approve", "feedback": ""}),
-        config=config,
-    )
-    final = graph.invoke(
-        Command(resume={"decision": "abort", "feedback": "reject"}),
-        config=config,
-    )
-    assert final.get("status") == "aborted"
-    assert not final.get("artifact_path")
-
-
 def test_maximum_iteration_enforcement(tmp_path: Path) -> None:
     """Looping request_changes ends with max_iterations_reached."""
     graph = _graph(tmp_path)
-    _, config = _run_to_coder_gate(graph, "max-iter-1")
+    _, config = _run_to_human_gate(graph, "max-iter-1")
 
     for index in range(MAX_ITERATIONS - 1):
         graph.invoke(
@@ -615,39 +584,10 @@ def test_maximum_iteration_enforcement(tmp_path: Path) -> None:
     assert final["generated_files"]
 
 
-def test_maximum_iteration_enforcement_from_reviewer_gate(tmp_path: Path) -> None:
-    """Reviewer request_changes also respects the iteration budget."""
-    graph = _graph(tmp_path)
-    _, config = _run_to_coder_gate(graph, "max-iter-reviewer-1")
-
-    # Exhaust iterations via coder request_changes, then approve into reviewer.
-    for index in range(MAX_ITERATIONS - 1):
-        graph.invoke(
-            Command(
-                resume={
-                    "decision": "request_changes",
-                    "feedback": f"coder change {index}",
-                }
-            ),
-            config=config,
-        )
-
-    graph.invoke(
-        Command(resume={"decision": "approve", "feedback": ""}),
-        config=config,
-    )
-    final = graph.invoke(
-        Command(resume={"decision": "request_changes", "feedback": "reviewer more"}),
-        config=config,
-    )
-    assert final.get("status") == STATUS_MAX_ITERATIONS
-    assert not final.get("artifact_path")
-
-
 def test_invalid_human_decision_rejected(tmp_path: Path) -> None:
     """Unsupported resume payloads are rejected by schema validation."""
     graph = _graph(tmp_path)
-    _, config = _run_to_coder_gate(graph, "invalid-decision-1")
+    _, config = _run_to_human_gate(graph, "invalid-decision-1")
     with pytest.raises(ValueError, match="Unsupported human decision"):
         graph.invoke(
             Command(resume={"decision": "ship_it", "feedback": "nope"}),
@@ -667,12 +607,8 @@ def test_successful_end_to_end_with_mocked_agents(tmp_path: Path) -> None:
     )
     config = run_config_for_thread()
     graph.invoke({"user_request": "Build a hello CLI"}, config=config)
-    graph.invoke(
-        Command(resume={"decision": "approve", "feedback": "coder ok"}),
-        config=config,
-    )
     final = graph.invoke(
-        Command(resume={"decision": "approve", "feedback": "reviewer ok"}),
+        Command(resume={"decision": "approve", "feedback": "looks good"}),
         config=config,
     )
 
@@ -692,8 +628,9 @@ def test_coder_cannot_bypass_verification(tmp_path: Path) -> None:
     edge_pairs = {(edge.source, edge.target) for edge in drawable.edges}
     assert ("coder", "verify") in edge_pairs
     assert ("coder", "reviewer") not in edge_pairs
-    assert ("coder", "coder_human_gate") not in edge_pairs
-    assert ("verify", "coder_human_gate") in edge_pairs
+    assert ("verify", "reviewer") in edge_pairs
+    assert ("verify", "coder_human_gate") not in edge_pairs
+    assert ("coder_human_gate", "reviewer") not in edge_pairs
 
 
 def test_reviewer_cannot_bypass_human_gate(tmp_path: Path) -> None:

@@ -277,13 +277,13 @@ class WorkflowService:
         if interrupted:
             if status == "awaiting_coder_approval":
                 return (
-                    "Paused at the coder gate. Approve to send the project "
-                    "to the automated reviewer."
+                    "Paused for human review. Approve to package the "
+                    "project and unlock the download ZIP."
                 )
             if status == "awaiting_reviewer_approval":
                 return (
-                    "Paused at the reviewer gate. Approve again to package "
-                    "the project and unlock the download ZIP."
+                    "Automated review finished. Approve to package the "
+                    "project and unlock the download ZIP, or request changes."
                 )
             return "Workflow paused awaiting human decision."
         messages = {

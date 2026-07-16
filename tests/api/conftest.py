@@ -74,7 +74,7 @@ def mock_verify(state: dict[str, Any]) -> dict[str, Any]:
             "commands": [],
             "errors": [],
         },
-        "status": "awaiting_coder_approval",
+        "status": "reviewing",
     }
 
 
