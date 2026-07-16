@@ -33,8 +33,8 @@ STATUS_COMPLETED = "completed"
 
 # Named graph targets used by conditional edges.
 InitNext = Literal["planner", "__end__"]
-CoderGateNext = Literal["reviewer", "coder", "planner", "__end__"]
-ReviewerGateNext = Literal["package_project", "coder", "planner", "__end__"]
+CoderGateNext = Literal["reviewer", "planner", "__end__"]
+ReviewerGateNext = Literal["package_project", "planner", "__end__"]
 PlannerNext = Literal["coder", "__end__"]
 
 
@@ -140,8 +140,8 @@ def route_after_coder_gate(state: WorkflowState) -> CoderGateNext:
     Decisions:
 
     * ``approve`` → reviewer
-    * ``request_changes`` → coder (unless iteration limit reached)
-    * ``replan`` → planner (unless iteration limit reached)
+    * ``request_changes`` → planner (revision mode, unless iteration limit)
+    * ``replan`` → planner (revision mode, unless iteration limit)
     * ``abort`` → END
 
     When a loop-back decision would continue past ``max_iterations``,
@@ -163,9 +163,7 @@ def route_after_coder_gate(state: WorkflowState) -> CoderGateNext:
     if decision in {"request_changes", "replan"} and iteration_limit_reached(state):
         return "__end__"
 
-    if decision == "request_changes":
-        return "coder"
-    if decision == "replan":
+    if decision in {"request_changes", "replan"}:
         return "planner"
 
     # Unknown or missing decisions are treated as terminal abort.
@@ -178,8 +176,8 @@ def route_after_reviewer_gate(state: WorkflowState) -> ReviewerGateNext:
     Decisions:
 
     * ``approve`` → package_project
-    * ``request_changes`` → coder (unless iteration limit reached)
-    * ``replan`` → planner (unless iteration limit reached)
+    * ``request_changes`` → planner (revision mode, unless iteration limit)
+    * ``replan`` → planner (revision mode, unless iteration limit)
     * ``abort`` → END
 
     Args:
@@ -198,9 +196,7 @@ def route_after_reviewer_gate(state: WorkflowState) -> ReviewerGateNext:
     if decision in {"request_changes", "replan"} and iteration_limit_reached(state):
         return "__end__"
 
-    if decision == "request_changes":
-        return "coder"
-    if decision == "replan":
+    if decision in {"request_changes", "replan"}:
         return "planner"
 
     return "__end__"
@@ -233,6 +229,8 @@ def status_for_terminal_gate(
         return STATUS_ABORTED
     if decision in {"request_changes", "replan"} and iteration_limit_reached(state):
         return STATUS_MAX_ITERATIONS
+    if decision in {"request_changes", "replan"}:
+        return "planning"
     if gate == "coder" and decision == "approve":
         return "awaiting_review"
     if gate == "reviewer" and decision == "approve":
