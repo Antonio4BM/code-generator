@@ -22,16 +22,16 @@ def _start(client: TestClient) -> str:
 
 
 def test_human_approval_resumption(client: TestClient) -> None:
-    """Approving at the coder gate resumes into the reviewer interrupt."""
+    """Approving at the human gate packages the downloadable artifact."""
     workflow_id = _start(client)
     response = client.post(
         f"/runs/{workflow_id}/decision",
         json={"decision": "approve", "feedback": ""},
     )
-    assert response.status_code == 202
+    assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "awaiting_reviewer_approval"
-    assert body["interrupt"]["gate"] == "reviewer"
+    assert body["status"] == "completed"
+    assert body["artifact_url"] == f"/runs/{workflow_id}/artifact"
 
 
 def test_human_change_request_resumption(
@@ -57,7 +57,7 @@ def test_human_change_request_resumption(
             json={"decision": "request_changes", "feedback": "add README details"},
         )
         assert response.status_code == 202
-        assert response.json()["status"] == "awaiting_coder_approval"
+        assert response.json()["status"] == "awaiting_reviewer_approval"
         assert coder.call_count == 2
 
 
@@ -85,7 +85,7 @@ def test_human_replan_resumption(
         )
         assert response.status_code == 202
         assert planner.call_count == 2
-        assert response.json()["interrupt"]["gate"] == "coder"
+        assert response.json()["interrupt"]["gate"] == "reviewer"
 
 
 def test_human_abort_resumption(client: TestClient) -> None:
@@ -133,10 +133,6 @@ def test_unknown_workflow_decision(client: TestClient) -> None:
 def test_decision_on_completed_workflow(client: TestClient) -> None:
     """A completed workflow cannot accept another decision."""
     workflow_id = _start(client)
-    client.post(
-        f"/runs/{workflow_id}/decision",
-        json={"decision": "approve"},
-    )
     client.post(
         f"/runs/{workflow_id}/decision",
         json={"decision": "approve", "feedback": "final"},
@@ -226,25 +222,24 @@ def test_resume_uses_same_thread_id(
     app = create_app(settings=api_settings, graph=graph)
     with TestClient(app) as client:
         workflow_id = _start(client)
+        snapshot_before = graph.get_state(run_config_for_thread(workflow_id))
+        assert snapshot_before.values["workflow_id"] == workflow_id
+        assert snapshot_before.interrupts
+        assert snapshot_before.interrupts[0].value["gate"] == "reviewer"
+
         client.post(
             f"/runs/{workflow_id}/decision",
             json={"decision": "approve"},
         )
         snapshot = graph.get_state(run_config_for_thread(workflow_id))
         assert snapshot.values["workflow_id"] == workflow_id
-        # Interrupt still attached to the same thread
-        assert snapshot.interrupts
-        assert snapshot.interrupts[0].value["gate"] == "reviewer"
+        assert snapshot.values["status"] == "completed"
+        assert not snapshot.interrupts
 
 
 def test_response_when_reviewer_gate_interrupts(client: TestClient) -> None:
-    """Reviewer-gate interrupts return an explicit paused status."""
-    workflow_id = _start(client)
-    response = client.post(
-        f"/runs/{workflow_id}/decision",
-        json={"decision": "approve"},
-    )
-    body = response.json()
+    """The sole human gate interrupts after automated review."""
+    body = client.post("/run-ticket", json={"ticket": "Build a hello CLI"}).json()
     assert body["status"] == "awaiting_reviewer_approval"
     assert body["interrupt"]["gate"] == "reviewer"
     assert "reviewer_verdict" in body["interrupt"]

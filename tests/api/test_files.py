@@ -8,11 +8,11 @@ from codegen_workflow.api.service import _MAX_CANDIDATE_PREVIEW_BYTES
 
 
 def _start_paused(client: TestClient) -> str:
-    """Start a mocked workflow and stop at the coder human gate."""
+    """Start a mocked workflow and stop at the human review gate."""
     response = client.post("/run-ticket", json={"ticket": "Build a hello CLI"})
     assert response.status_code == 202
     body = response.json()
-    assert body["interrupt"]["gate"] == "coder"
+    assert body["interrupt"]["gate"] == "reviewer"
     return body["workflow_id"]
 
 
@@ -122,18 +122,18 @@ def test_unknown_workflow_files(client: TestClient) -> None:
 def test_files_readable_while_paused_and_after_approve_path(
     client: TestClient,
 ) -> None:
-    """Files remain listable after progressing past the coder gate."""
+    """Files remain listable while paused and after packaging completes."""
     workflow_id = _start_paused(client)
     listed = client.get(f"/runs/{workflow_id}/files")
     assert listed.status_code == 200
     assert "hello.py" in listed.json()["files"]
 
-    resumed = client.post(
+    completed = client.post(
         f"/runs/{workflow_id}/decision",
         json={"decision": "approve"},
     )
-    assert resumed.status_code == 202
-    assert resumed.json()["interrupt"]["gate"] == "reviewer"
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "completed"
 
     listed_again = client.get(f"/runs/{workflow_id}/files")
     assert listed_again.status_code == 200

@@ -19,9 +19,9 @@ def test_run_ticket_success(client: TestClient) -> None:
     assert response.status_code == 202
     body = response.json()
     assert body["workflow_id"]
-    assert body["status"] == "awaiting_coder_approval"
+    assert body["status"] == "awaiting_reviewer_approval"
     assert body["interrupt"] is not None
-    assert body["interrupt"]["gate"] == "coder"
+    assert body["interrupt"]["gate"] == "reviewer"
     assert body["trace_url"].endswith("/trace")
 
 
@@ -125,12 +125,13 @@ def test_invalid_iteration_limits_rejected(client: TestClient) -> None:
     ).status_code == 422
 
 
-def test_response_when_coder_gate_interrupts(client: TestClient) -> None:
-    """Coder-gate interrupts return an explicit paused status."""
+def test_response_when_human_gate_interrupts(client: TestClient) -> None:
+    """Human-gate interrupts return an explicit paused status after auto-review."""
     body = client.post("/run-ticket", json={"ticket": "Build a hello CLI"}).json()
-    assert body["status"] == "awaiting_coder_approval"
-    assert body["interrupt"]["gate"] == "coder"
+    assert body["status"] == "awaiting_reviewer_approval"
+    assert body["interrupt"]["gate"] == "reviewer"
     assert "verification_report" in body["interrupt"]
+    assert "review_report" in body["interrupt"] or "reviewer_verdict" in body["interrupt"]
 
 
 def test_response_when_workflow_completes(
@@ -138,7 +139,7 @@ def test_response_when_workflow_completes(
     workspace_root,
 ) -> None:
     """Completed runs return status completed and an artifact URL."""
-    # Use real mocked graph through two approvals quickly via service
+    # Use mocked graph through one human approval to completion
     graph = build_graph(
         checkpointer=InMemorySaver(),
         planner=mock_planner,
@@ -151,11 +152,7 @@ def test_response_when_workflow_completes(
     with TestClient(app) as client:
         first = client.post("/run-ticket", json={"ticket": "Build a hello CLI"})
         workflow_id = first.json()["workflow_id"]
-        second = client.post(
-            f"/runs/{workflow_id}/decision",
-            json={"decision": "approve", "feedback": ""},
-        )
-        assert second.json()["status"] == "awaiting_reviewer_approval"
+        assert first.json()["status"] == "awaiting_reviewer_approval"
         final = client.post(
             f"/runs/{workflow_id}/decision",
             json={"decision": "approve", "feedback": "ship it"},
@@ -240,4 +237,4 @@ def test_handlers_do_not_invoke_agent_nodes_directly(
     # Nodes run via the graph, not via direct API imports
     assert planner.call_count == 1
     assert coder.call_count == 1
-    assert reviewer.call_count == 0
+    assert reviewer.call_count == 1

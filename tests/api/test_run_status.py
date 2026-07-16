@@ -13,8 +13,8 @@ def test_run_status_retrieval(client: TestClient) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["workflow_id"] == workflow_id
-    assert body["status"] == "awaiting_coder_approval"
-    assert body["pending_gate"] == "coder"
+    assert body["status"] == "awaiting_reviewer_approval"
+    assert body["pending_gate"] == "reviewer"
     assert body["iteration"] == 1
     assert body["max_iterations"] >= 1
     assert "hello.py" in body["generated_files"]

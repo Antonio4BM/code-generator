@@ -20,10 +20,6 @@ def _complete(client: TestClient) -> str:
     """Drive a mocked workflow to completion and return its ID."""
     started = client.post("/run-ticket", json={"ticket": "Build a hello CLI"})
     workflow_id = started.json()["workflow_id"]
-    client.post(
-        f"/runs/{workflow_id}/decision",
-        json={"decision": "approve"},
-    )
     final = client.post(
         f"/runs/{workflow_id}/decision",
         json={"decision": "approve", "feedback": "done"},
