@@ -223,10 +223,73 @@ def _default_commands(plan: dict[str, Any]) -> list[tuple[str, list[str]]]:
     return commands
 
 
+def _workspace_file_set(candidate: Path) -> set[str]:
+    """Return relative POSIX paths of regular files under candidate/."""
+    if not candidate.exists():
+        return set()
+    files: set[str] = set()
+    for path in candidate.rglob("*"):
+        if path.is_file():
+            files.add(path.relative_to(candidate).as_posix())
+    return files
+
+
+def evaluate_manifest_revision(
+    workspace_files: set[str],
+    plan: dict[str, Any] | None,
+    plan_diff: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Evaluate added/removed manifest compliance for a plan revision.
+
+    Args:
+        workspace_files: Relative file paths currently under candidate/.
+        plan: Active authoritative plan (unused for path math; reserved).
+        plan_diff: Deterministic manifest diff from the planner revision.
+
+    Returns:
+        Structured ``manifest_revision`` report fragment, or ``None`` when
+        no add/remove structural revision applies.
+    """
+    del plan  # plan paths are reflected in plan_diff retained/added lists
+    diff = plan_diff or {}
+    expected_added = [
+        str(path).replace("\\", "/")
+        for path in (diff.get("added") or [])
+        if str(path).strip() and not str(path).rstrip("/").endswith(".") and not str(path).endswith("/")
+    ]
+    expected_removed = [
+        str(path).replace("\\", "/")
+        for path in (diff.get("removed") or [])
+        if str(path).strip() and not str(path).endswith("/")
+    ]
+    if not expected_added and not expected_removed:
+        return None
+
+    successfully_added = sorted(
+        path for path in expected_added if path in workspace_files
+    )
+    missing_added = sorted(path for path in expected_added if path not in workspace_files)
+    successfully_removed = sorted(
+        path for path in expected_removed if path not in workspace_files
+    )
+    still_present = sorted(
+        path for path in expected_removed if path in workspace_files
+    )
+    return {
+        "expected_added": sorted(expected_added),
+        "successfully_added": successfully_added,
+        "missing_added": missing_added,
+        "expected_removed": sorted(expected_removed),
+        "successfully_removed": successfully_removed,
+        "still_present": still_present,
+    }
+
+
 def build_verification_report(
     workspace_path: Path | str,
     plan: dict[str, Any] | None = None,
     *,
+    plan_diff: dict[str, Any] | None = None,
     command_runner=run_command,
 ) -> VerificationReport:
     """Execute verification steps against the candidate project.
@@ -234,6 +297,7 @@ def build_verification_report(
     Args:
         workspace_path: Workflow workspace root.
         plan: Optional project plan providing install/validation commands.
+        plan_diff: Optional manifest revision diff for structural checks.
         command_runner: Callable used to execute commands (injectable for
             tests). Signature matches :func:`run_command`.
 
@@ -247,6 +311,39 @@ def build_verification_report(
     results: list[CommandResult] = []
     errors: list[dict[str, Any]] = []
 
+    workspace_files = _workspace_file_set(candidate)
+    manifest_revision = evaluate_manifest_revision(workspace_files, plan, plan_diff)
+    structural_failed = bool(
+        manifest_revision
+        and (
+            manifest_revision.get("missing_added")
+            or manifest_revision.get("still_present")
+        )
+    )
+    if structural_failed and manifest_revision:
+        if manifest_revision.get("missing_added"):
+            errors.append(
+                {
+                    "step": "manifest_added",
+                    "exit_code": 1,
+                    "stderr": (
+                        "Missing required files: "
+                        + ", ".join(manifest_revision["missing_added"])
+                    ),
+                }
+            )
+        if manifest_revision.get("still_present"):
+            errors.append(
+                {
+                    "step": "manifest_removed",
+                    "exit_code": 1,
+                    "stderr": (
+                        "Obsolete removed files still present: "
+                        + ", ".join(manifest_revision["still_present"])
+                    ),
+                }
+            )
+
     for name, argv in _default_commands(plan):
         result = command_runner(name, argv, cwd=candidate)
         results.append(result)
@@ -259,13 +356,17 @@ def build_verification_report(
                 }
             )
 
-    passed = all(item.exit_code == 0 for item in results) if results else False
+    commands_passed = all(item.exit_code == 0 for item in results) if results else False
+    passed = commands_passed and not structural_failed
+    metadata: dict[str, Any] = {"candidate_path": str(candidate)}
+    if manifest_revision is not None:
+        metadata["manifest_revision"] = manifest_revision
     report = VerificationReport(
         passed=passed,
         overall_status="passed" if passed else "failed",
         commands=results,
         errors=errors,
-        metadata={"candidate_path": str(candidate)},
+        metadata=metadata,
     )
 
     report_dir = reports_dir(workspace_path)
@@ -299,6 +400,7 @@ def verification_node(state: WorkflowState) -> dict[str, Any]:
     report = build_verification_report(
         workspace_path,
         plan=state.get("plan") or {},
+        plan_diff=state.get("plan_diff") or {},
     )
     return {
         "verification_report": report.model_dump(),
