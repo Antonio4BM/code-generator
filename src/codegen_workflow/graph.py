@@ -4,6 +4,9 @@ The graph receives only ``user_request``, creates a UUID-scoped
 workspace, and sequences planner → coder → verify → human gates →
 reviewer → packaging with deterministic, bounded routing.
 
+Human ``request_changes`` and ``replan`` decisions both return to the
+planner in revision mode before coding again.
+
 Checkpointing is used for durable workflow state, interruption,
 recovery, and resumption — not as chat-memory storage.
 
@@ -141,7 +144,6 @@ def build_graph(
         route_after_coder_gate,
         {
             "reviewer": "reviewer",
-            "coder": "coder",
             "planner": "planner",
             "__end__": END,
         },
@@ -153,7 +155,6 @@ def build_graph(
         route_after_reviewer_gate,
         {
             "package_project": "package_project",
-            "coder": "coder",
             "planner": "planner",
             "__end__": END,
         },
