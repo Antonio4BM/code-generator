@@ -1,11 +1,13 @@
 """Assemble the greenfield code-generation LangGraph workflow.
 
 The graph receives only ``user_request``, creates a UUID-scoped
-workspace, and sequences planner → coder → verify → human gates →
-reviewer → packaging with deterministic, bounded routing.
+workspace, and sequences planner → coder → verify → reviewer →
+human gate → packaging with deterministic, bounded routing.
 
-Human ``request_changes`` and ``replan`` decisions both return to the
-planner in revision mode before coding again.
+Automated review runs before any human interrupt. Human
+``request_changes`` and ``replan`` decisions both return to the
+planner in revision mode before coding again. Human ``approve``
+packages the candidate into a downloadable ZIP.
 
 Checkpointing is used for durable workflow state, interruption,
 recovery, and resumption — not as chat-memory storage.
@@ -30,13 +32,12 @@ from langgraph.graph._node import StateNode
 from langgraph.graph.state import CompiledStateGraph
 
 from codegen_workflow.nodes.coder import coder_node
-from codegen_workflow.nodes.human_gates import coder_human_gate, reviewer_human_gate
+from codegen_workflow.nodes.human_gates import reviewer_human_gate
 from codegen_workflow.nodes.planner import planner_node
 from codegen_workflow.nodes.reviewer import reviewer_node
 from codegen_workflow.nodes.verification import verification_node
 from codegen_workflow.packaging import package_project_node
 from codegen_workflow.routing import (
-    route_after_coder_gate,
     route_after_initialize,
     route_after_planner,
     route_after_reviewer_gate,
@@ -110,7 +111,6 @@ def build_graph(
         "verify",
         verify if verify is not None else verification_node,
     )
-    graph.add_node("coder_human_gate", coder_human_gate)
     graph.add_node(
         "reviewer",
         reviewer if reviewer is not None else reviewer_node,
@@ -135,20 +135,10 @@ def build_graph(
             "__end__": END,
         },
     )
-    # Coder never routes directly to the reviewer: verification and the
-    # coder human gate are mandatory.
+    # Coder never routes directly to packaging: verification, automated
+    # review, and the human gate are mandatory.
     graph.add_edge("coder", "verify")
-    graph.add_edge("verify", "coder_human_gate")
-    graph.add_conditional_edges(
-        "coder_human_gate",
-        route_after_coder_gate,
-        {
-            "reviewer": "reviewer",
-            "planner": "planner",
-            "__end__": END,
-        },
-    )
-    # Reviewer verdict is advisory; the human gate controls the transition.
+    graph.add_edge("verify", "reviewer")
     graph.add_edge("reviewer", "reviewer_human_gate")
     graph.add_conditional_edges(
         "reviewer_human_gate",

@@ -228,10 +228,12 @@ def coder_human_gate(state: WorkflowState) -> dict[str, Any]:
 
 
 def reviewer_human_gate(state: WorkflowState) -> dict[str, Any]:
-    """Pause for final human approval after the reviewer node.
+    """Pause for human approval after automated review.
 
-    Surfaces the plan, file tree, verification report, reviewer verdict,
-    acceptance-criteria results, findings, residual risks, and iteration.
+    This is the sole human gate. Surfaces the user request, plan, file
+    tree, coder summary, verification report, reviewer verdict,
+    acceptance-criteria results, findings, residual risks, iteration,
+    and optional snapshot diff. Approving packages the download ZIP.
 
     Args:
         state: Workflow state after the reviewer node.
@@ -243,12 +245,17 @@ def reviewer_human_gate(state: WorkflowState) -> dict[str, Any]:
     review_report = state.get("review_report") or {}
     iteration = int(state.get("iteration") or 0)
     workspace_path = state.get("workspace_path")
+    if workspace_path:
+        snapshot_candidate(workspace_path, iteration)
 
     payload = {
         "gate": "reviewer",
+        "user_request": state.get("user_request"),
         "plan": state.get("plan") or {},
         "generated_file_tree": _file_tree(workspace_path),
+        "coder_summary": (state.get("coder_result") or {}).get("summary"),
         "verification_report": state.get("verification_report") or {},
+        "review_report": review_report,
         "reviewer_verdict": review_report.get("verdict"),
         "acceptance_criteria_results": review_report.get(
             "acceptance_criteria_results",
@@ -257,6 +264,10 @@ def reviewer_human_gate(state: WorkflowState) -> dict[str, Any]:
         "findings": review_report.get("findings", []),
         "residual_risks": review_report.get("residual_risks", []),
         "iteration": iteration,
+        "diff_from_previous_snapshot": _diff_from_previous_snapshot(
+            workspace_path,
+            iteration,
+        ),
     }
     resume_value = interrupt(payload)
     try:

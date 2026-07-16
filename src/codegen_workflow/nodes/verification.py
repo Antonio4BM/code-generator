@@ -404,5 +404,5 @@ def verification_node(state: WorkflowState) -> dict[str, Any]:
     )
     return {
         "verification_report": report.model_dump(),
-        "status": "awaiting_coder_approval",
+        "status": "reviewing",
     }
