@@ -64,15 +64,38 @@ Rules:
 
 Process:
 1. Inspect the workspace with list_files / read_file.
-2. For initial generation, create every file in the plan file_manifest
+2. For initial_generation, create every file in the plan file_manifest
    in dependency order (depends_on).
-3. For revisions, read existing files first and make targeted changes.
-4. Address verification failures, reviewer findings, and human feedback.
-5. Call resolve_feedback(finding_id, resolution) only after making the
+3. For implementation_revision, read existing files first and make
+   targeted changes while preserving the active plan.
+4. For plan_revision, reconcile the complete workspace with the revised
+   plan: create added files, delete removed files, and update retained
+   files affected by the change. Do not preserve obsolete files that the
+   revised plan no longer requires.
+5. Address verification failures, reviewer findings, and human feedback.
+6. Call resolve_feedback(finding_id, resolution) only after making the
    corresponding file changes.
-6. When finished, stop calling tools and reply with a short plain-text
+7. When finished, stop calling tools and reply with a short plain-text
    summary of what you did.
 """
+
+
+def select_coder_mode(state: WorkflowState, existing_files: list[str]) -> str:
+    """Select the coder operating mode for this attempt.
+
+    Args:
+        state: Current workflow state.
+        existing_files: Relative paths already present under candidate/.
+
+    Returns:
+        One of ``initial_generation``, ``implementation_revision``, or
+        ``plan_revision``.
+    """
+    if not existing_files:
+        return "initial_generation"
+    if state.get("previous_plan") and state.get("plan_diff"):
+        return "plan_revision"
+    return "implementation_revision"
 
 
 class ToolCallingModel(Protocol):
@@ -238,6 +261,8 @@ def build_coder_prompt(
     iteration: int,
     existing_files: list[str],
     findings: list[tuple[str, str]],
+    mode: str | None = None,
+    plan_diff: dict[str, Any] | None = None,
 ) -> str:
     """Build the human prompt for one coder iteration.
 
@@ -247,11 +272,15 @@ def build_coder_prompt(
         iteration: Current iteration count before this coder run.
         existing_files: Relative paths already present in the workspace.
         findings: Extracted findings to address.
+        mode: Optional explicit coder mode.
+        plan_diff: Optional manifest diff for plan-revision mode.
 
     Returns:
         Prompt text for the tool-calling model.
     """
-    mode = "revision" if existing_files else "initial_generation"
+    resolved_mode = mode or (
+        "implementation_revision" if existing_files else "initial_generation"
+    )
     ordered = topological_file_order(plan.file_manifest)
     findings_block = (
         "\n".join(f"- {fid}: {desc}" for fid, desc in findings) if findings else "None."
@@ -263,31 +292,75 @@ def build_coder_prompt(
             f"{spec.purpose}"
         )
 
-    return "\n\n".join(
-        [
-            f"## Mode\n{mode} (current iteration={iteration})",
-            f"## User request\n{user_request.strip()}",
-            "## Plan summary\n"
-            f"project_name={plan.project_name}\n"
-            f"language={plan.language}\n"
-            f"framework={plan.framework}\n"
-            f"architecture_pattern={plan.architecture_pattern}\n"
-            f"dependencies={plan.dependencies}\n"
-            f"install_commands={plan.install_commands}\n"
-            f"validation_commands={plan.validation_commands}\n"
-            f"run_command={plan.run_command}",
-            "## Recommended generation order\n" + "\n".join(f"- {p}" for p in ordered),
-            "## File manifest\n" + "\n".join(manifest_lines),
-            "## Existing workspace files\n"
-            + (
-                "\n".join(f"- {p}" for p in existing_files)
-                if existing_files
-                else "None."
-            ),
-            "## Findings to address\n" + findings_block,
-            "Use tools to implement the required files, then stop with a short summary.",
-        ]
+    sections = [
+        f"## Mode\n{resolved_mode} (current iteration={iteration})",
+        f"## User request\n{user_request.strip()}",
+        "## Plan summary\n"
+        f"project_name={plan.project_name}\n"
+        f"language={plan.language}\n"
+        f"framework={plan.framework}\n"
+        f"architecture_pattern={plan.architecture_pattern}\n"
+        f"dependencies={plan.dependencies}\n"
+        f"install_commands={plan.install_commands}\n"
+        f"validation_commands={plan.validation_commands}\n"
+        f"run_command={plan.run_command}",
+        "## Recommended generation order\n" + "\n".join(f"- {p}" for p in ordered),
+        "## File manifest\n" + "\n".join(manifest_lines),
+        "## Existing workspace files\n"
+        + (
+            "\n".join(f"- {p}" for p in existing_files)
+            if existing_files
+            else "None."
+        ),
+        "## Findings to address\n" + findings_block,
+    ]
+
+    if resolved_mode == "plan_revision":
+        diff = plan_diff or {}
+        added = list(diff.get("added") or [])
+        removed = list(diff.get("removed") or [])
+        retained = list(diff.get("retained") or [])
+        sections.extend(
+            [
+                "## Plan revision\n"
+                "The project plan has been revised.\n\n"
+                "The revised plan is authoritative.\n\n"
+                "Reconcile the complete workspace with the revised plan.\n\n"
+                "Files added to the manifest must be created.\n"
+                "Files removed from the manifest must be deleted.\n"
+                "Retained files must be updated when affected by the "
+                "requested feature change.\n\n"
+                "Do not preserve obsolete files from the previous plan "
+                "unless the revised plan explicitly requires them.",
+                "## Manifest changes\n"
+                "Added files:\n"
+                + ("\n".join(f"- {path}" for path in added) if added else "- None.")
+                + "\n\nRemoved files:\n"
+                + (
+                    "\n".join(f"- {path}" for path in removed)
+                    if removed
+                    else "- None."
+                )
+                + "\n\nRetained files:\n"
+                + (
+                    "\n".join(f"- {path}" for path in retained)
+                    if retained
+                    else "- None."
+                ),
+            ]
+        )
+    elif resolved_mode == "implementation_revision":
+        sections.append(
+            "## Implementation revision\n"
+            "Preserve the active plan. Read existing files first and make "
+            "targeted changes to address findings without redesigning the "
+            "project structure."
+        )
+
+    sections.append(
+        "Use tools to implement the required files, then stop with a short summary."
     )
+    return "\n\n".join(sections)
 
 
 def run_tool_loop(
@@ -575,6 +648,8 @@ def coder_node(
     existing_files = tools.list_files()
     findings = extract_findings(state)
     user_request = str(state.get("user_request") or plan.objective)
+    mode = select_coder_mode(state, existing_files)
+    plan_diff = dict(state.get("plan_diff") or {})
 
     messages: list[Any] = [
         SystemMessage(content=SYSTEM_PROMPT),
@@ -585,6 +660,8 @@ def coder_node(
                 iteration=current_iteration,
                 existing_files=existing_files,
                 findings=findings,
+                mode=mode,
+                plan_diff=plan_diff,
             )
         ),
     ]
@@ -677,5 +754,6 @@ __all__ = [
     "create_coder_llm",
     "extract_findings",
     "run_tool_loop",
+    "select_coder_mode",
     "topological_file_order",
 ]
