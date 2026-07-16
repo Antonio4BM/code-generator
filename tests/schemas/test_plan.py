@@ -192,8 +192,8 @@ def test_unsafe_file_paths_rejected() -> None:
     assert any("relative" in error for error in errors)
 
 
-def test_plan_without_tests_rejected() -> None:
-    """Plans that omit test tasks or test files fail validation."""
+def test_plan_without_tests_is_allowed() -> None:
+    """Automated tests and paired source/test tasks are optional."""
     payload = _valid_plan_dict()
     payload["tasks"] = [
         task for task in payload["tasks"] if task["task_type"] != "test"
@@ -201,10 +201,137 @@ def test_plan_without_tests_rejected() -> None:
     payload["file_manifest"] = [
         spec for spec in payload["file_manifest"] if spec["file_type"] != "test"
     ]
+    # Keep a dependency config file from the original valid plan.
     plan = ProjectPlan.model_validate(payload)
-    errors = collect_plan_validation_errors(plan)
-    assert any("no associated test task" in error for error in errors)
-    assert any("automated tests" in error for error in errors)
+    assert collect_plan_validation_errors(plan) == []
+
+
+def test_plan_without_dependency_config_is_allowed() -> None:
+    """Dependency-configuration files are optional."""
+    payload = _valid_plan_dict()
+    payload["file_manifest"] = [
+        spec
+        for spec in payload["file_manifest"]
+        if spec["path"] not in {"pyproject.toml", "requirements.txt", "package.json"}
+    ]
+    plan = ProjectPlan.model_validate(payload)
+    assert collect_plan_validation_errors(plan) == []
+
+
+def test_static_markup_plan_allows_missing_tests_and_deps() -> None:
+    """HTML/static-site plans may omit automated tests and package configs."""
+    from codegen_workflow.schemas.plan import is_static_markup_project
+
+    payload = {
+        "project_name": "marketplace_landing",
+        "objective": "Create a simple landing page to expose a marketplace.",
+        "assumptions": ["Static hosting only."],
+        "language": "HTML",
+        "framework": None,
+        "architecture_pattern": "static site",
+        "dependencies": [],
+        "epics": [
+            {
+                "id": "epic-1",
+                "title": "Landing page",
+                "description": "Build the marketplace landing page.",
+                "acceptance_criteria": [
+                    "index.html exists and includes a products section heading."
+                ],
+            }
+        ],
+        "stories": [
+            {
+                "id": "story-1",
+                "epic_id": "epic-1",
+                "title": "Page structure",
+                "description": "As a visitor I want a clear landing page layout.",
+                "acceptance_criteria": [
+                    "index.html contains header, main, and footer landmarks."
+                ],
+            },
+            {
+                "id": "story-2",
+                "epic_id": "epic-1",
+                "title": "Page styling",
+                "description": "As a visitor I want readable visual styling.",
+                "acceptance_criteria": [
+                    "styles.css is linked from index.html and sets body font-size."
+                ],
+            },
+        ],
+        "tasks": [
+            {
+                "id": "task-1",
+                "story_id": "story-1",
+                "title": "Write HTML",
+                "description": "Create the landing page HTML structure.",
+                "task_type": "source",
+                "dependencies": [],
+                "files": ["index.html"],
+                "acceptance_criteria": [
+                    "index.html file exists with marketplace product section."
+                ],
+            },
+            {
+                "id": "task-2",
+                "story_id": "story-2",
+                "title": "Write CSS",
+                "description": "Create stylesheet for the landing page.",
+                "task_type": "source",
+                "dependencies": ["task-1"],
+                "files": ["styles.css"],
+                "acceptance_criteria": [
+                    "styles.css exists and is referenced by index.html."
+                ],
+            },
+            {
+                "id": "task-3",
+                "story_id": "story-1",
+                "title": "Write README",
+                "description": "Document how to open the static site.",
+                "task_type": "documentation",
+                "dependencies": ["task-1"],
+                "files": ["README.md"],
+                "acceptance_criteria": [
+                    "README.md explains how to open index.html locally."
+                ],
+            },
+        ],
+        "file_manifest": [
+            {
+                "path": "index.html",
+                "purpose": "Landing page markup.",
+                "file_type": "source",
+                "requirements": ["Contains marketplace sections."],
+                "depends_on": [],
+            },
+            {
+                "path": "styles.css",
+                "purpose": "Landing page styles.",
+                "file_type": "source",
+                "requirements": ["Linked from index.html."],
+                "depends_on": ["index.html"],
+            },
+            {
+                "path": "README.md",
+                "purpose": "Project documentation.",
+                "file_type": "documentation",
+                "requirements": ["Describe how to view the page."],
+                "depends_on": [],
+            },
+        ],
+        "install_commands": [],
+        "validation_commands": [
+            'python3 -c "from pathlib import Path; assert Path(\'index.html\').is_file()"'
+        ],
+        "run_command": None,
+        "risks": [],
+    }
+    plan = ProjectPlan.model_validate(payload)
+    assert is_static_markup_project(plan) is True
+    assert collect_plan_validation_errors(plan) == []
+    assert validate_plan(plan) is plan
 
 
 def test_unsafe_project_name_rejected_by_schema() -> None:

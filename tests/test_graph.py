@@ -12,6 +12,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from codegen_workflow.graph import build_graph, create_workflow, run_config_for_thread
+from codegen_workflow.revision import plan_diff_payload
 from codegen_workflow.routing import MAX_ITERATIONS, STATUS_INVALID_INPUT, STATUS_MAX_ITERATIONS
 from codegen_workflow.workspace import create_workflow_id, initialize_workspace_node
 
@@ -35,10 +36,47 @@ SAMPLE_PLAN = {
 
 
 def _mock_planner(state: dict[str, Any]) -> dict[str, Any]:
-    """Return a fixed validated plan."""
+    """Return a fixed validated plan, with revision fields when requested."""
+    change = state.get("change_request") or {}
+    current = state.get("plan") or {}
+    revised = {**SAMPLE_PLAN, "objective": state["user_request"]}
+    if current and change:
+        feedback = str(change.get("feedback") or "").lower()
+        if "auth" in feedback or "jwt" in feedback:
+            revised = {
+                **revised,
+                "file_manifest": [
+                    {"path": "src/app.py", "purpose": "app"},
+                    {"path": "src/auth.py", "purpose": "auth"},
+                    {"path": "tests/test_app.py", "purpose": "tests"},
+                    {"path": "tests/test_auth.py", "purpose": "auth tests"},
+                    {"path": "README.md", "purpose": "docs"},
+                    {"path": "requirements.txt", "purpose": "deps"},
+                ],
+            }
+        elif "payment" in feedback or "remove" in feedback:
+            revised = {
+                **revised,
+                "file_manifest": [
+                    {"path": "src/app.py", "purpose": "app"},
+                    {"path": "tests/test_app.py", "purpose": "tests"},
+                    {"path": "README.md", "purpose": "docs"},
+                    {"path": "requirements.txt", "purpose": "deps"},
+                ],
+            }
+        return {
+            "previous_plan": current,
+            "plan": revised,
+            "plan_diff": plan_diff_payload(current, revised),
+            "planner_errors": [],
+            "change_request": {},
+            "status": "coding",
+        }
     return {
-        "plan": {**SAMPLE_PLAN, "objective": state["user_request"]},
+        "plan": revised,
         "planner_errors": [],
+        "previous_plan": {},
+        "plan_diff": {},
         "status": "coding",
     }
 
@@ -224,21 +262,27 @@ def test_coder_approval_to_reviewer(tmp_path: Path) -> None:
     assert result["__interrupt__"][0].value["gate"] == "reviewer"
 
 
-def test_coder_change_request_to_coder(tmp_path: Path) -> None:
-    """request_changes at the coder gate re-invokes the coder."""
+def test_coder_change_request_to_planner_then_coder(tmp_path: Path) -> None:
+    """request_changes routes through planner revision then coder."""
+    planner = MagicMock(side_effect=_mock_planner)
     coder = MagicMock(side_effect=_mock_coder)
-    graph = _graph(tmp_path, coder=coder)
+    graph = _graph(tmp_path, planner=planner, coder=coder)
     _, config = _run_to_coder_gate(graph, "changes-coder-1")
+    assert planner.call_count == 1
     assert coder.call_count == 1
     graph.invoke(
         Command(resume={"decision": "request_changes", "feedback": "fix tests"}),
         config=config,
     )
+    assert planner.call_count == 2
     assert coder.call_count == 2
+    state = graph.get_state(config).values
+    assert state.get("previous_plan")
+    assert "plan_diff" in state
 
 
 def test_coder_replan_to_planner(tmp_path: Path) -> None:
-    """replan at the coder gate returns to the planner."""
+    """replan at the coder gate returns to the planner (same revision path)."""
     planner = MagicMock(side_effect=_mock_planner)
     graph = _graph(tmp_path, planner=planner)
     _, config = _run_to_coder_gate(graph, "replan-planner-1")
@@ -248,6 +292,10 @@ def test_coder_replan_to_planner(tmp_path: Path) -> None:
         config=config,
     )
     assert planner.call_count == 2
+    state = graph.get_state(config).values
+    assert state.get("previous_plan")
+    assert state.get("plan_diff") is not None
+
 
 
 def test_reviewer_approval_to_packaging(tmp_path: Path) -> None:
@@ -271,21 +319,222 @@ def test_reviewer_approval_to_packaging(tmp_path: Path) -> None:
     assert final["review_report"]
 
 
-def test_reviewer_change_request_to_coder(tmp_path: Path) -> None:
-    """request_changes at the reviewer gate returns to the coder."""
+def test_reviewer_change_request_to_planner_then_coder(tmp_path: Path) -> None:
+    """request_changes at the reviewer gate revises via planner then coder."""
+    planner = MagicMock(side_effect=_mock_planner)
     coder = MagicMock(side_effect=_mock_coder)
-    graph = _graph(tmp_path, coder=coder)
+    graph = _graph(tmp_path, planner=planner, coder=coder)
     _, config = _run_to_coder_gate(graph, "review-changes-1")
     graph.invoke(
         Command(resume={"decision": "approve", "feedback": ""}),
         config=config,
     )
+    assert planner.call_count == 1
     assert coder.call_count == 1
     graph.invoke(
         Command(resume={"decision": "request_changes", "feedback": "fix bug"}),
         config=config,
     )
+    assert planner.call_count == 2
     assert coder.call_count == 2
+
+
+def test_add_feature_request_changes_flow(tmp_path: Path) -> None:
+    """request_changes can add authentication files through planner revision."""
+    initial_plan = {
+        **SAMPLE_PLAN,
+        "file_manifest": [
+            {"path": "src/app.py", "purpose": "app"},
+            {"path": "tests/test_app.py", "purpose": "tests"},
+            {"path": "README.md", "purpose": "docs"},
+            {"path": "requirements.txt", "purpose": "deps"},
+        ],
+    }
+
+    def planner(state: dict[str, Any]) -> dict[str, Any]:
+        change = state.get("change_request") or {}
+        current = state.get("plan") or {}
+        if current and change:
+            revised = {
+                **initial_plan,
+                "file_manifest": [
+                    {"path": "src/app.py", "purpose": "app"},
+                    {"path": "src/auth.py", "purpose": "auth"},
+                    {"path": "tests/test_app.py", "purpose": "tests"},
+                    {"path": "tests/test_auth.py", "purpose": "auth tests"},
+                    {"path": "README.md", "purpose": "docs"},
+                    {"path": "requirements.txt", "purpose": "deps"},
+                ],
+            }
+            return {
+                "previous_plan": current,
+                "plan": revised,
+                "plan_diff": plan_diff_payload(current, revised),
+                "planner_errors": [],
+                "change_request": {},
+                "status": "coding",
+            }
+        return {
+            "plan": initial_plan,
+            "planner_errors": [],
+            "previous_plan": {},
+            "plan_diff": {},
+            "status": "coding",
+        }
+
+    def coder(state: dict[str, Any]) -> dict[str, Any]:
+        workspace = Path(state["workspace_path"])
+        candidate = workspace / "candidate"
+        candidate.mkdir(parents=True, exist_ok=True)
+        created: list[str] = []
+        for entry in (state.get("plan") or {}).get("file_manifest") or []:
+            rel = str(entry["path"])
+            path = candidate / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_text(f"# {rel}\n", encoding="utf-8")
+                created.append(rel)
+            else:
+                path.write_text(path.read_text(encoding="utf-8") + "\n# touched\n", encoding="utf-8")
+        iteration = int(state.get("iteration") or 0) + 1
+        files = [p.relative_to(candidate).as_posix() for p in candidate.rglob("*") if p.is_file()]
+        return {
+            "generated_files": files,
+            "file_hashes": {path: "hash" for path in files},
+            "coder_result": {
+                "summary": "reconciled plan",
+                "created_files": created,
+                "modified_files": [],
+                "deleted_files": [],
+                "unresolved_issues": [],
+                "feedback_resolutions": {},
+                "manifest_compliance": {path: True for path in files},
+            },
+            "iteration": iteration,
+            "status": "verifying",
+        }
+
+    graph = _graph(tmp_path, planner=planner, coder=coder)
+    _, config = _run_to_coder_gate(graph, "add-auth-1", "Build a small app")
+    graph.invoke(
+        Command(
+            resume={
+                "decision": "request_changes",
+                "feedback": "Add JWT authentication",
+            }
+        ),
+        config=config,
+    )
+    state = graph.get_state(config).values
+    assert "src/auth.py" in state["plan_diff"]["added"]
+    assert "tests/test_auth.py" in state["plan_diff"]["added"]
+    assert (Path(state["workspace_path"]) / "candidate" / "src" / "auth.py").is_file()
+    assert (Path(state["workspace_path"]) / "candidate" / "tests" / "test_auth.py").is_file()
+
+
+def test_remove_feature_request_changes_flow(tmp_path: Path) -> None:
+    """request_changes can remove payment files through planner revision."""
+    initial_plan = {
+        **SAMPLE_PLAN,
+        "file_manifest": [
+            {"path": "src/app.py", "purpose": "app"},
+            {"path": "src/payments.py", "purpose": "payments"},
+            {"path": "tests/test_app.py", "purpose": "tests"},
+            {"path": "tests/test_payments.py", "purpose": "payment tests"},
+            {"path": "README.md", "purpose": "docs"},
+            {"path": "requirements.txt", "purpose": "deps"},
+        ],
+    }
+
+    def planner(state: dict[str, Any]) -> dict[str, Any]:
+        change = state.get("change_request") or {}
+        current = state.get("plan") or {}
+        if current and change:
+            revised = {
+                **initial_plan,
+                "file_manifest": [
+                    {"path": "src/app.py", "purpose": "app"},
+                    {"path": "tests/test_app.py", "purpose": "tests"},
+                    {"path": "README.md", "purpose": "docs"},
+                    {"path": "requirements.txt", "purpose": "deps"},
+                ],
+            }
+            return {
+                "previous_plan": current,
+                "plan": revised,
+                "plan_diff": plan_diff_payload(current, revised),
+                "planner_errors": [],
+                "change_request": {},
+                "status": "coding",
+            }
+        return {
+            "plan": initial_plan,
+            "planner_errors": [],
+            "previous_plan": {},
+            "plan_diff": {},
+            "status": "coding",
+        }
+
+    def coder(state: dict[str, Any]) -> dict[str, Any]:
+        workspace = Path(state["workspace_path"])
+        candidate = workspace / "candidate"
+        candidate.mkdir(parents=True, exist_ok=True)
+        deleted: list[str] = []
+        for entry in (state.get("plan") or {}).get("file_manifest") or []:
+            rel = str(entry["path"])
+            path = candidate / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_text(f"# {rel}\n", encoding="utf-8")
+        for rel in (state.get("plan_diff") or {}).get("removed") or []:
+            path = candidate / rel
+            if path.exists():
+                path.unlink()
+                deleted.append(rel)
+        iteration = int(state.get("iteration") or 0) + 1
+        files = [p.relative_to(candidate).as_posix() for p in candidate.rglob("*") if p.is_file()]
+        return {
+            "generated_files": files,
+            "file_hashes": {path: "hash" for path in files},
+            "coder_result": {
+                "summary": "removed payments",
+                "created_files": [],
+                "modified_files": [],
+                "deleted_files": deleted,
+                "unresolved_issues": [],
+                "feedback_resolutions": {},
+                "manifest_compliance": {path: True for path in files},
+            },
+            "iteration": iteration,
+            "status": "verifying",
+        }
+
+    graph = _graph(tmp_path, planner=planner, coder=coder)
+    _, config = _run_to_coder_gate(graph, "remove-pay-1", "Build payments app")
+
+    # Seed payment files that the revision must delete.
+    first = graph.get_state(config).values
+    candidate = Path(first["workspace_path"]) / "candidate"
+    (candidate / "src").mkdir(parents=True, exist_ok=True)
+    (candidate / "tests").mkdir(parents=True, exist_ok=True)
+    (candidate / "src" / "payments.py").write_text("pay\n", encoding="utf-8")
+    (candidate / "tests" / "test_payments.py").write_text("test\n", encoding="utf-8")
+
+    graph.invoke(
+        Command(
+            resume={
+                "decision": "request_changes",
+                "feedback": "Remove the payments feature",
+            }
+        ),
+        config=config,
+    )
+    state = graph.get_state(config).values
+    assert "src/payments.py" in state["plan_diff"]["removed"]
+    assert "tests/test_payments.py" in state["plan_diff"]["removed"]
+    assert "src/payments.py" in state["coder_result"]["deleted_files"]
+    assert not (candidate / "src" / "payments.py").exists()
+    assert not (candidate / "tests" / "test_payments.py").exists()
 
 
 def test_reviewer_replan_to_planner(tmp_path: Path) -> None:

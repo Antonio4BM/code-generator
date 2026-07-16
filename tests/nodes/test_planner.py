@@ -312,7 +312,7 @@ def test_unsafe_file_paths() -> None:
 
 
 def test_plan_without_tests() -> None:
-    """Plans lacking test coverage fail planner validation."""
+    """Plans lacking automated tests are accepted (tests are optional)."""
     payload = _valid_plan_dict()
     payload["tasks"] = [
         task for task in payload["tasks"] if task["task_type"] != "test"
@@ -327,9 +327,8 @@ def test_plan_without_tests() -> None:
         {"user_request": "Build a demo app", "planner_feedback": []},
         llm=llm,
     )
-    assert result["status"] == "planner_failed"
-    details = result["planner_errors"][0]["details"]
-    assert any("test task" in detail for detail in details)
+    assert result["status"] == "coding"
+    assert result.get("plan") is not None
 
 
 def test_model_returns_invalid_structured_output() -> None:
@@ -412,3 +411,171 @@ def test_validation_error_from_pydantic_on_bad_dict() -> None:
     )
     assert result["status"] == "planner_failed"
     assert result["planner_errors"][0]["type"] == "invalid_structured_output"
+
+
+def test_initial_planning_has_no_previous_plan_or_diff() -> None:
+    """Initial planning does not populate revision fields."""
+    llm = MagicMock()
+    llm.invoke.return_value = _cli_plan()
+    result = planner_node(
+        {"user_request": "Create a Python CLI that greets the user by name."},
+        llm=llm,
+    )
+    assert result["status"] == "coding"
+    assert result.get("previous_plan") == {}
+    assert result.get("plan_diff") == {}
+
+
+def test_revision_planning_preserves_previous_and_computes_diff() -> None:
+    """Revision mode stores previous_plan and a deterministic plan_diff."""
+    current = _valid_plan_dict()
+    revised_dict = _valid_plan_dict()
+    revised_dict["file_manifest"].append(
+        {
+            "path": "src/demo_app/auth.py",
+            "purpose": "Authentication helpers.",
+            "file_type": "source",
+            "requirements": ["Defines authenticate()."],
+            "depends_on": ["src/demo_app/main.py"],
+        }
+    )
+    llm = MagicMock()
+    llm.invoke.return_value = ProjectPlan.model_validate(revised_dict)
+
+    result = planner_node(
+        {
+            "user_request": "Create a Python CLI that greets the user by name.",
+            "plan": current,
+            "change_request": {
+                "feedback": "Add JWT authentication",
+                "source_gate": "coder",
+                "iteration": 1,
+            },
+            "generated_files": ["src/demo_app/main.py", "README.md"],
+            "verification_report": {"passed": False},
+            "review_report": {},
+            "feedback_history": [],
+        },
+        llm=llm,
+    )
+
+    assert result["status"] == "coding"
+    assert result["previous_plan"] == current
+    assert result["plan"]["project_name"] == revised_dict["project_name"]
+    assert "src/demo_app/auth.py" in result["plan_diff"]["added"]
+    assert result["change_request"] == {}
+    messages = llm.invoke.call_args.args[0]
+    prompt_text = "\n".join(
+        message.content
+        for message in messages
+        if getattr(message, "type", "") == "human"
+    )
+    assert "Revision mode" in prompt_text
+    assert "Add JWT authentication" in prompt_text
+    assert "Current ProjectPlan" in prompt_text
+
+
+def test_invalid_revised_plan_does_not_replace_current_plan() -> None:
+    """Failed revision planning keeps the authoritative plan."""
+    current = _valid_plan_dict()
+    llm = MagicMock()
+    llm.invoke.return_value = {"project_name": "broken"}
+
+    result = planner_node(
+        {
+            "user_request": "Create a Python CLI that greets the user by name.",
+            "plan": current,
+            "change_request": {
+                "feedback": "Add auth",
+                "source_gate": "coder",
+                "iteration": 1,
+            },
+        },
+        llm=llm,
+    )
+    assert result["status"] == "planner_failed"
+    assert result["plan"] == current
+
+
+def test_static_to_api_revision_prompt_requires_app_checklist() -> None:
+    """Upgrading a static site to an API includes application-plan requirements."""
+    from codegen_workflow.nodes.planner import build_revision_prompt
+
+    prompt = build_revision_prompt(
+        {
+            "plan": {
+                "project_name": "landing",
+                "objective": "Static marketplace landing page.",
+                "language": "HTML",
+                "architecture_pattern": "static site",
+                "dependencies": [],
+                "file_manifest": [
+                    {
+                        "path": "index.html",
+                        "purpose": "page",
+                        "file_type": "source",
+                        "requirements": ["exists"],
+                        "depends_on": [],
+                    },
+                    {
+                        "path": "README.md",
+                        "purpose": "docs",
+                        "file_type": "documentation",
+                        "requirements": ["exists"],
+                        "depends_on": [],
+                    },
+                ],
+                "epics": [
+                    {
+                        "id": "E1",
+                        "title": "Landing",
+                        "description": "Landing page",
+                        "acceptance_criteria": ["index.html exists with a header."],
+                    }
+                ],
+                "stories": [
+                    {
+                        "id": "S1",
+                        "epic_id": "E1",
+                        "title": "Page",
+                        "description": "As a visitor I want a landing page.",
+                        "acceptance_criteria": ["index.html has a main section."],
+                    }
+                ],
+                "tasks": [
+                    {
+                        "id": "T1",
+                        "story_id": "S1",
+                        "title": "HTML",
+                        "description": "Write HTML",
+                        "task_type": "source",
+                        "dependencies": [],
+                        "files": ["index.html"],
+                        "acceptance_criteria": ["index.html file exists on disk."],
+                    }
+                ],
+                "install_commands": [],
+                "validation_commands": [
+                    'python3 -c "from pathlib import Path; assert Path(\'index.html\').is_file()"'
+                ],
+                "assumptions": [],
+                "framework": None,
+                "run_command": None,
+                "risks": [],
+            },
+            "change_request": {
+                "feedback": "Add a FastAPI backend API for product listings",
+                "source_gate": "coder",
+                "iteration": 1,
+            },
+            "generated_files": ["index.html", "README.md"],
+            "verification_report": {},
+            "review_report": {},
+            "feedback_history": [],
+        },
+        "Build a simple marketplace landing page",
+    )
+    assert "static site → application/API upgrade" in prompt
+    assert "OPTIONAL" in prompt
+    assert "Backend language/framework" in prompt
+    assert "browser-open" in prompt.lower()

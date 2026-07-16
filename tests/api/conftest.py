@@ -25,9 +25,25 @@ SAMPLE_PLAN = {
 
 def mock_planner(state: dict[str, Any]) -> dict[str, Any]:
     """Return a fixed validated plan without calling an LLM."""
+    from codegen_workflow.revision import plan_diff_payload
+
+    change = state.get("change_request") or {}
+    current = state.get("plan") or {}
+    revised = {**SAMPLE_PLAN, "objective": state["user_request"]}
+    if current and change:
+        return {
+            "previous_plan": current,
+            "plan": revised,
+            "plan_diff": plan_diff_payload(current, revised),
+            "planner_errors": [],
+            "change_request": {},
+            "status": "coding",
+        }
     return {
-        "plan": {**SAMPLE_PLAN, "objective": state["user_request"]},
+        "plan": revised,
         "planner_errors": [],
+        "previous_plan": {},
+        "plan_diff": {},
         "status": "coding",
     }
 
