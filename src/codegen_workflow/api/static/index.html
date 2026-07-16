@@ -46,6 +46,9 @@
         display: grid;
         gap: 0.75rem;
       }
+      .composer[hidden] {
+        display: none;
+      }
       textarea {
         width: 100%;
         min-height: 140px;
@@ -151,6 +154,55 @@
         white-space: pre-wrap;
         word-break: break-word;
       }
+      .decision-panel {
+        display: grid;
+        gap: 0.75rem;
+        margin-top: 0.75rem;
+      }
+      .decision-panel label {
+        display: grid;
+        gap: 0.35rem;
+      }
+      .decision-panel label[hidden] {
+        display: none;
+      }
+      .decision-panel select,
+      .decision-panel textarea {
+        width: 100%;
+      }
+      .decision-panel select:disabled,
+      .decision-panel textarea:disabled {
+        opacity: 0.55;
+        cursor: wait;
+      }
+      .pending-tag {
+        display: none;
+        align-items: center;
+        gap: 0.5rem;
+        justify-self: start;
+        margin: 0;
+        padding: 0.35rem 0.7rem;
+        border-radius: 999px;
+        background: rgba(61, 154, 120, 0.18);
+        color: var(--accent);
+        font-size: 0.85rem;
+        font-weight: 600;
+      }
+      .pending-tag[aria-hidden="false"] {
+        display: inline-flex;
+      }
+      .pending-tag::before {
+        content: "";
+        width: 0.55rem;
+        height: 0.55rem;
+        border-radius: 50%;
+        background: var(--accent);
+        animation: pulse 1s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 0.35; transform: scale(0.85); }
+        50% { opacity: 1; transform: scale(1); }
+      }
     </style>
   </head>
   <body>
@@ -180,20 +232,23 @@
           <ul class="file-list" id="file-list"></ul>
           <pre id="file-content">Select a file to preview.</pre>
         </div>
-        <label>
-          Decision
-          <select id="decision">
-            <option value="approve">approve</option>
-            <option value="request_changes">request_changes</option>
-            <option value="replan">replan</option>
-            <option value="abort">abort</option>
-          </select>
-        </label>
-        <label id="feedback-label">
-          Feedback
-          <textarea id="feedback" placeholder="Required for request_changes / replan"></textarea>
-        </label>
-        <button type="button" id="decide">Submit decision</button>
+        <div class="decision-panel" id="decision-panel">
+          <label>
+            Decision
+            <select id="decision">
+              <option value="approve">approve</option>
+              <option value="request_changes">request_changes</option>
+              <option value="replan">replan</option>
+              <option value="abort">abort</option>
+            </select>
+          </label>
+          <label id="feedback-label">
+            Feedback
+            <textarea id="feedback" placeholder="Required for request_changes / replan"></textarea>
+          </label>
+          <p class="pending-tag" id="pending-tag" aria-hidden="true">Submitting decision…</p>
+          <button type="button" id="decide">Submit decision</button>
+        </div>
       </details>
     </main>
     <script>
@@ -207,18 +262,31 @@
       const decisionEl = document.getElementById("decision");
       const feedbackEl = document.getElementById("feedback");
       const feedbackLabel = document.getElementById("feedback-label");
+      const decideBtn = document.getElementById("decide");
+      const pendingTag = document.getElementById("pending-tag");
       const gateBanner = document.getElementById("gate-banner");
       let workflowId = null;
+      let decisionPending = false;
 
       function syncFeedbackField() {
         const needsFeedback =
           decisionEl.value === "request_changes" || decisionEl.value === "replan";
-        feedbackEl.disabled = !needsFeedback;
         feedbackLabel.hidden = !needsFeedback;
         if (!needsFeedback) {
           feedbackEl.value = "";
         }
+        feedbackEl.disabled = decisionPending || !needsFeedback;
       }
+
+      function setDecisionPending(pending, label) {
+        decisionPending = pending;
+        decisionEl.disabled = pending;
+        decideBtn.disabled = pending;
+        pendingTag.textContent = label || "Submitting decision…";
+        pendingTag.setAttribute("aria-hidden", pending ? "false" : "true");
+        syncFeedbackField();
+      }
+
       decisionEl.addEventListener("change", syncFeedbackField);
       syncFeedbackField();
 
@@ -303,11 +371,13 @@
         statusEl.textContent = `Status: ${data.status}`;
         renderAssistant(data);
         if (data.interrupt) {
+          form.hidden = true;
           review.hidden = false;
           review.open = true;
           gateBanner.textContent = gateCopy(data.interrupt);
           loadFileTree(data.workflow_id);
         } else {
+          form.hidden = false;
           review.hidden = true;
           gateBanner.textContent = "";
           clearFilePreview();
@@ -340,8 +410,8 @@
         }
       });
 
-      document.getElementById("decide").addEventListener("click", async () => {
-        if (!workflowId) return;
+      decideBtn.addEventListener("click", async () => {
+        if (!workflowId || decisionPending) return;
         const decision = decisionEl.value;
         const needsFeedback =
           decision === "request_changes" || decision === "replan";
@@ -349,20 +419,35 @@
           statusEl.textContent = "Feedback is required for this decision.";
           return;
         }
-        const res = await fetch(`/runs/${workflowId}/decision`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            decision,
-            feedback: needsFeedback ? feedbackEl.value : "",
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          statusEl.textContent = data.message || "Decision failed";
-          return;
+        const pendingLabels = {
+          request_changes: "Requesting changes…",
+          replan: "Replanning…",
+          approve: "Approving…",
+          abort: "Aborting…",
+        };
+        setDecisionPending(true, pendingLabels[decision] || "Submitting decision…");
+        statusEl.textContent = `Status: submitting ${decision}…`;
+        try {
+          const res = await fetch(`/runs/${workflowId}/decision`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              decision,
+              feedback: needsFeedback ? feedbackEl.value : "",
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            statusEl.textContent = data.message || "Decision failed";
+            setDecisionPending(false);
+            return;
+          }
+          setDecisionPending(false);
+          showResult(data);
+        } catch (err) {
+          statusEl.textContent = "Network error";
+          setDecisionPending(false);
         }
-        showResult(data);
       });
     </script>
   </body>
