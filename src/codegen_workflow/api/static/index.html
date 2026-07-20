@@ -203,11 +203,126 @@
         0%, 100% { opacity: 0.35; transform: scale(0.85); }
         50% { opacity: 1; transform: scale(1); }
       }
+      .page-header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 0.75rem 1rem;
+        margin-bottom: 0.5rem;
+      }
+      .page-header h1 { margin: 0; }
+      .tour-launch {
+        background: transparent;
+        color: var(--text);
+        border: 1px solid var(--border);
+        font-weight: 500;
+        padding: 0.45rem 0.85rem;
+        font-size: 0.9rem;
+      }
+      .tour-launch:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .tour-launch:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      #start-review-tour {
+        margin: 0 0 1rem;
+      }
+      .tour-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        background: rgba(4, 10, 16, 0.72);
+      }
+      .tour-overlay[hidden] { display: none; }
+      .tour-target {
+        position: relative;
+        z-index: 1001;
+        outline: 2px solid var(--accent);
+        outline-offset: 6px;
+        border-radius: 10px;
+        box-shadow: 0 0 0 6px rgba(61, 154, 120, 0.2);
+        transition: outline-offset 0.15s ease, box-shadow 0.15s ease;
+      }
+      .tour-dialog {
+        position: fixed;
+        z-index: 1002;
+        width: min(360px, calc(100vw - 32px));
+        max-width: 380px;
+        padding: 1rem 1.1rem 1.1rem;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--panel);
+        color: var(--text);
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+      }
+      .tour-dialog[hidden] { display: none; }
+      .tour-progress {
+        margin: 0 0 0.45rem;
+        color: var(--muted);
+        font-size: 0.8rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+      }
+      .tour-dialog h2 {
+        margin: 0 0 0.5rem;
+        font-family: "IBM Plex Serif", Georgia, serif;
+        font-size: 1.15rem;
+        font-weight: 600;
+      }
+      .tour-dialog p {
+        margin: 0 0 1rem;
+        color: var(--muted);
+        font-size: 0.95rem;
+        line-height: 1.45;
+      }
+      .tour-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        justify-content: flex-end;
+      }
+      .tour-actions button {
+        justify-self: auto;
+        background: transparent;
+        color: var(--text);
+        border: 1px solid var(--border);
+        font-weight: 500;
+        padding: 0.45rem 0.8rem;
+        font-size: 0.9rem;
+      }
+      .tour-actions button.primary {
+        background: var(--accent);
+        color: #04130e;
+        border-color: var(--accent);
+        font-weight: 600;
+      }
+      .tour-actions button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .tour-target {
+          transition: none;
+        }
+        .pending-tag::before {
+          animation: none;
+        }
+      }
     </style>
   </head>
   <body>
     <main>
-      <h1>Code Generator</h1>
+      <div class="page-header">
+        <h1>Code Generator</h1>
+        <button type="button" class="tour-launch" id="start-tour">
+          How to use this page
+        </button>
+      </div>
       <p class="lede">
         Describe the software you want. One ticket becomes one workflow result —
         not a multi-agent chat transcript.
@@ -227,7 +342,10 @@
       <details class="review" id="review" hidden>
         <summary>Human review controls</summary>
         <p class="gate-banner" id="gate-banner"></p>
-        <div class="file-panel">
+        <button type="button" class="tour-launch" id="start-review-tour" hidden>
+          Guide me through the review
+        </button>
+        <div class="file-panel" id="file-panel">
           <p class="file-meta" id="file-meta">Generated files</p>
           <ul class="file-list" id="file-list"></ul>
           <pre id="file-content">Select a file to preview.</pre>
@@ -251,6 +369,25 @@
         </div>
       </details>
     </main>
+    <div class="tour-overlay" id="tour-overlay" hidden></div>
+    <div
+      class="tour-dialog"
+      id="tour-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="tour-title"
+      aria-describedby="tour-description"
+      hidden
+    >
+      <p class="tour-progress" id="tour-progress"></p>
+      <h2 id="tour-title"></h2>
+      <p id="tour-description"></p>
+      <div class="tour-actions">
+        <button type="button" id="tour-back">Back</button>
+        <button type="button" id="tour-skip">Skip</button>
+        <button type="button" class="primary" id="tour-next">Next</button>
+      </div>
+    </div>
     <script>
       const form = document.getElementById("ticket-form");
       const statusEl = document.getElementById("status");
@@ -265,8 +402,357 @@
       const decideBtn = document.getElementById("decide");
       const pendingTag = document.getElementById("pending-tag");
       const gateBanner = document.getElementById("gate-banner");
+      const startTourBtn = document.getElementById("start-tour");
+      const startReviewTourBtn = document.getElementById("start-review-tour");
+      const tourOverlay = document.getElementById("tour-overlay");
+      const tourDialog = document.getElementById("tour-dialog");
+      const tourProgress = document.getElementById("tour-progress");
+      const tourTitle = document.getElementById("tour-title");
+      const tourDescription = document.getElementById("tour-description");
+      const tourBack = document.getElementById("tour-back");
+      const tourNext = document.getElementById("tour-next");
+      const tourSkip = document.getElementById("tour-skip");
       let workflowId = null;
       let decisionPending = false;
+
+      const submissionTourSteps = [
+        {
+          target: "#ticket",
+          title: "Describe your project",
+          description:
+            "Explain what the application should do. Include required features, preferred technology, important constraints, tests, and expected documentation.",
+        },
+        {
+          target: "#submit",
+          title: "Start the workflow",
+          description:
+            "Submit the ticket to start planning, code generation, automated verification, and review.",
+        },
+        {
+          target: "#status",
+          title: "Follow the progress",
+          description:
+            "This area shows whether the workflow is planning, coding, verifying, reviewing, waiting for your decision, or completed.",
+        },
+      ];
+
+      const reviewTourSteps = [
+        {
+          target: "#review",
+          title: "Human review controls",
+          description:
+            "The workflow pauses here after automated verification so you can inspect the generated project and decide what should happen next.",
+        },
+        {
+          target: "#file-panel",
+          title: "What the file panel is for",
+          description:
+            "This panel lists every file generated for your project. Use it to browse the result: pick a file on the left, then read its contents in the preview below before you approve or send it back.",
+        },
+        {
+          target: "#file-list",
+          title: "Select a file",
+          description:
+            "Click any file name in this list to open it. The highlighted row is the file currently shown in the preview.",
+        },
+        {
+          target: "#file-content",
+          title: "Preview the source",
+          description:
+            "This is the contents of the selected file. Check that the implementation matches your original ticket before choosing a decision.",
+        },
+        {
+          target: "#decision",
+          title: "What the decisions are for",
+          description:
+            "approve packages the project so you can download the ZIP. request_changes sends the project back for code fixes (feedback required). replan rebuilds the plan when structure or architecture should change (feedback required). abort stops the workflow.",
+        },
+        {
+          target: "#decide",
+          title: "Submit your decision",
+          description:
+            "After you choose a decision—and add feedback if you picked request_changes or replan—click here to resume the workflow.",
+        },
+      ];
+
+      let activeTour = [];
+      let activeTourIndex = 0;
+      let activeTarget = null;
+      let previouslyFocusedElement = null;
+      let tourIsActive = false;
+
+      function prefersReducedMotion() {
+        return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      }
+
+      function isElementAvailable(el) {
+        if (!el) return false;
+        let node = el;
+        while (node) {
+          if (node.hidden || (node.hasAttribute && node.hasAttribute("hidden"))) {
+            return false;
+          }
+          if (
+            node !== el &&
+            node.tagName === "DETAILS" &&
+            !node.open
+          ) {
+            return false;
+          }
+          node = node.parentElement;
+        }
+        return true;
+      }
+
+      function resolveTourStep(step) {
+        if (!step || !step.target) return null;
+        const el = document.querySelector(step.target);
+        if (!isElementAvailable(el)) return null;
+        return el;
+      }
+
+      function findValidTourIndex(fromIndex, direction) {
+        const step = direction >= 0 ? 1 : -1;
+        let index = fromIndex;
+        while (index >= 0 && index < activeTour.length) {
+          if (resolveTourStep(activeTour[index])) return index;
+          index += step;
+        }
+        return -1;
+      }
+
+      function clearTourTarget() {
+        if (activeTarget) {
+          activeTarget.classList.remove("tour-target");
+          activeTarget = null;
+        }
+      }
+
+      function getTourFocusableButtons() {
+        return [tourBack, tourSkip, tourNext].filter(
+          (btn) => !btn.hidden && !btn.disabled && btn.offsetParent !== null
+        );
+      }
+
+      function positionTourDialog() {
+        if (!tourIsActive || !activeTarget) return;
+
+        const margin = 16;
+        const gap = 12;
+        const rect = activeTarget.getBoundingClientRect();
+        const dialogRect = tourDialog.getBoundingClientRect();
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
+        const spaceBelow = viewportHeight - rect.bottom - margin;
+        const spaceAbove = rect.top - margin;
+
+        let top;
+        const preferBelow = spaceBelow >= dialogRect.height + gap;
+        const preferAbove = spaceAbove >= dialogRect.height + gap;
+
+        if (preferBelow) {
+          top = rect.bottom + gap;
+        } else if (preferAbove) {
+          top = rect.top - dialogRect.height - gap;
+        } else if (spaceBelow >= spaceAbove) {
+          top = Math.min(rect.bottom + gap, viewportHeight - dialogRect.height - margin);
+        } else {
+          top = Math.max(margin, rect.top - dialogRect.height - gap);
+        }
+
+        if (
+          top < margin ||
+          top + dialogRect.height > viewportHeight - margin
+        ) {
+          top = Math.max(
+            margin,
+            viewportHeight - dialogRect.height - margin
+          );
+        }
+
+        let left = rect.left + rect.width / 2 - dialogRect.width / 2;
+        left = Math.max(margin, Math.min(left, viewportWidth - dialogRect.width - margin));
+
+        tourDialog.style.top = `${Math.round(top)}px`;
+        tourDialog.style.left = `${Math.round(left)}px`;
+      }
+
+      function renderTourStep() {
+        if (!tourIsActive || !activeTour.length) {
+          finishTour(false);
+          return;
+        }
+
+        const validIndex = findValidTourIndex(activeTourIndex, 1);
+        if (validIndex === -1) {
+          finishTour(false);
+          return;
+        }
+        activeTourIndex = validIndex;
+
+        const step = activeTour[activeTourIndex];
+        const target = resolveTourStep(step);
+        if (!target) {
+          finishTour(false);
+          return;
+        }
+
+        clearTourTarget();
+        activeTarget = target;
+        activeTarget.classList.add("tour-target");
+        activeTarget.scrollIntoView({
+          block: "nearest",
+          inline: "nearest",
+          behavior: prefersReducedMotion() ? "auto" : "smooth",
+        });
+
+        const stepNumber = activeTourIndex + 1;
+        const totalSteps = activeTour.length;
+        tourProgress.textContent = `Step ${stepNumber} of ${totalSteps}`;
+        tourTitle.textContent = step.title;
+        tourDescription.textContent = step.description;
+
+        const isFirst = findValidTourIndex(activeTourIndex - 1, -1) === -1;
+        const isLast = findValidTourIndex(activeTourIndex + 1, 1) === -1;
+        tourBack.disabled = isFirst;
+        tourNext.textContent = isLast ? "Finish" : "Next";
+
+        tourOverlay.hidden = false;
+        tourDialog.hidden = false;
+        positionTourDialog();
+        requestAnimationFrame(positionTourDialog);
+        tourNext.focus();
+      }
+
+      function startTour(steps, launcher) {
+        if (!steps || !steps.length) return;
+        if (tourIsActive) finishTour(false);
+
+        previouslyFocusedElement = launcher || document.activeElement;
+        activeTour = steps;
+        activeTourIndex = findValidTourIndex(0, 1);
+        if (activeTourIndex === -1) {
+          previouslyFocusedElement = null;
+          return;
+        }
+
+        tourIsActive = true;
+        renderTourStep();
+      }
+
+      function finishTour(markCompleted) {
+        const restoreFocus = previouslyFocusedElement;
+        clearTourTarget();
+        tourIsActive = false;
+        activeTour = [];
+        activeTourIndex = 0;
+        previouslyFocusedElement = null;
+        tourOverlay.hidden = true;
+        tourDialog.hidden = true;
+        tourDialog.style.top = "";
+        tourDialog.style.left = "";
+        if (restoreFocus && typeof restoreFocus.focus === "function") {
+          restoreFocus.focus();
+        }
+        void markCompleted;
+      }
+
+      function goTourNext() {
+        if (!tourIsActive) return;
+        const nextIndex = findValidTourIndex(activeTourIndex + 1, 1);
+        if (nextIndex === -1) {
+          finishTour(true);
+          return;
+        }
+        activeTourIndex = nextIndex;
+        renderTourStep();
+      }
+
+      function goTourBack() {
+        if (!tourIsActive) return;
+        const prevIndex = findValidTourIndex(activeTourIndex - 1, -1);
+        if (prevIndex === -1) return;
+        activeTourIndex = prevIndex;
+        renderTourStep();
+      }
+
+      function syncReviewTourButton() {
+        const available = !review.hidden;
+        startReviewTourBtn.hidden = !available;
+        startReviewTourBtn.disabled = !available;
+      }
+
+      startTourBtn.addEventListener("click", () => {
+        startTour(submissionTourSteps, startTourBtn);
+      });
+
+      startReviewTourBtn.addEventListener("click", () => {
+        if (review.hidden) return;
+        review.open = true;
+        startTour(reviewTourSteps, startReviewTourBtn);
+      });
+
+      tourBack.addEventListener("click", goTourBack);
+      tourNext.addEventListener("click", goTourNext);
+      tourSkip.addEventListener("click", () => finishTour(true));
+
+      tourDialog.addEventListener("keydown", (event) => {
+        if (!tourIsActive) return;
+
+        if (event.key === "Escape") {
+          event.preventDefault();
+          finishTour(false);
+          return;
+        }
+
+        if (event.key === "ArrowRight") {
+          event.preventDefault();
+          goTourNext();
+          return;
+        }
+
+        if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          goTourBack();
+          return;
+        }
+
+        if (event.key !== "Tab") return;
+
+        const focusable = getTourFocusableButtons();
+        if (!focusable.length) {
+          event.preventDefault();
+          return;
+        }
+
+        const currentIndex = focusable.indexOf(document.activeElement);
+        event.preventDefault();
+        if (event.shiftKey) {
+          const prev =
+            currentIndex <= 0 ? focusable[focusable.length - 1] : focusable[currentIndex - 1];
+          prev.focus();
+        } else {
+          const next =
+            currentIndex === -1 || currentIndex >= focusable.length - 1
+              ? focusable[0]
+              : focusable[currentIndex + 1];
+          next.focus();
+        }
+      });
+
+      window.addEventListener("resize", () => {
+        if (tourIsActive) positionTourDialog();
+      });
+
+      window.addEventListener(
+        "scroll",
+        () => {
+          if (tourIsActive) positionTourDialog();
+        },
+        true
+      );
+
+      syncReviewTourButton();
 
       function syncFeedbackField() {
         const needsFeedback =
@@ -382,6 +868,8 @@
           gateBanner.textContent = "";
           clearFilePreview();
         }
+        syncReviewTourButton();
+        if (tourIsActive) renderTourStep();
       }
 
       form.addEventListener("submit", async (event) => {
